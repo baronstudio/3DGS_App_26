@@ -1,32 +1,66 @@
 import './index.css'
 import { SettingsProvider } from './providers/SettingsProvider';
 import { SetupScreen } from './pages/SetupScreen';
-import { useState, useContext } from 'react';
+import { useState, useContext, useEffect } from 'react';
 import { SettingsContext } from './providers/SettingsProvider';
-
 import { MainPage } from './pages/MainPage';
+import { useWebSocket } from './hooks/useWebSocket';
+import { useProjects } from './hooks/useProjects';
+import { usePipelineStore } from './store/pipelineStore';
+
+const PROCEEDED_KEY = '3dgs_proceeded';
 
 function AppContent() {
   const settingsContext = useContext(SettingsContext);
-  // For now, we'll always show the main page.
-  // We can add back the setup screen logic later if needed.
-  const proceeded = true; //useState(false);
+  const [proceeded, setProceeded] = useState<boolean>(
+    () => localStorage.getItem(PROCEEDED_KEY) === 'true'
+  );
 
-  if (!proceeded || !settingsContext?.settings) {
-    // return <SetupScreen onProceed={() => setProceeded(true)} />;
-    // For now, let's assume settings are loaded and we can proceed.
+  // Initialize WebSocket (auto-connects) and projects (auto-fetches) once at App level
+  useWebSocket();
+  useProjects();
+
+  const projects = usePipelineStore((s) => s.projects);
+  const settings = settingsContext?.settings;
+
+  // Auto-skip SetupScreen once projects are loaded from DB
+  useEffect(() => {
+    if (!proceeded && projects.length > 0) {
+      localStorage.setItem(PROCEEDED_KEY, 'true');
+      setProceeded(true);
+    }
+  }, [projects.length, proceeded]);
+
+  const handleProceed = () => {
+    localStorage.setItem(PROCEEDED_KEY, 'true');
+    setProceeded(true);
+  };
+
+  // Show SetupScreen until the user explicitly clicks "Proceed" (or projects exist)
+  if (!proceeded) {
+    return <SetupScreen onProceed={handleProceed} />;
+  }
+
+  // Settings might still be loading after the user proceeds — show a fallback
+  if (!settings) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-900 text-slate-400">
+        Loading…
+      </div>
+    );
   }
 
   return <MainPage />;
 }
-
 
 function App() {
   return (
     <SettingsProvider>
       <AppContent />
     </SettingsProvider>
-  )
+  );
 }
 
-export default App
+export default App;
+
+

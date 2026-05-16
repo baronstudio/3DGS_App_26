@@ -1,25 +1,41 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import apiClient from '@/api/client';
-
-export interface Project {
-    id: string;
-    name: string;
-    created_at: string;
-}
+import { usePipelineStore } from '../store/pipelineStore';
+import type { Project } from '../types';
 
 export const useProjects = () => {
-    const [projects, setProjects] = useState<Project[]>([]);
+  const { setProjects, addProject, removeProject, setCurrentProject } =
+    usePipelineStore();
 
-    useEffect(() => {
-        apiClient.get('/projects/').then(response => {
-            setProjects(response.data);
-        });
-    }, []);
+  const fetchProjects = async () => {
+    const response = await apiClient.get<Project[]>('/projects/');
+    setProjects(response.data);
+  };
 
-    const createProject = async (name: string) => {
-        const response = await apiClient.post('/projects/', { name });
-        setProjects([...projects, response.data]);
-    };
+  const createProject = async (name: string, settings?: object) => {
+    const response = await apiClient.post<Project>('/projects/create', {
+      name,
+      ...(settings ? { settings } : {}),
+    });
+    addProject(response.data);
+    return response.data;
+  };
 
-    return { projects, createProject };
+  const deleteProject = async (id: string) => {
+    await apiClient.delete(`/projects/${id}`);
+    removeProject(id);
+  };
+
+  const selectProject = (id: string) => {
+    setCurrentProject(id);
+  };
+
+  useEffect(() => {
+    fetchProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return { fetchProjects, createProject, deleteProject, selectProject };
 };
+
+export default useProjects;

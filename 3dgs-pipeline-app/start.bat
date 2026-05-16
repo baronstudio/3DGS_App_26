@@ -7,6 +7,6 @@ start "Backend" cmd /c "call .\.venv\Scripts\activate.bat && uvicorn backend.mai
 echo "--- Starting Frontend Server ---"
 start "Frontend" cmd /c "cd frontend && npm run dev"
 
-echo "--- Opening Application in Browser ---"
-timeout /t 5 > nul
-start http://localhost:5173
+@REM echo "--- Opening Application in Browser ---"
+@REM timeout /t 5 > nul
+@REM start http://localhost:5173

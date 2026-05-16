@@ -1,15 +1,114 @@
-from fastapi import APIRouter
+import asyncio
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlmodel import Session
+
+from backend.core.pipeline_runner import (
+    request_abort,
+    request_pause,
+    request_resume,
+    run_pipeline,
+)
+from backend.db.database import get_session
+from backend.models.project import Project
 
 router = APIRouter()
 
+_running_tasks: dict[str, asyncio.Task] = {}
+
+
+class StartBody(BaseModel):
+    project_id: str
+    start_from_step: int = 1
+    settings: dict = {}
+
+
+class ControlBody(BaseModel):
+    project_id: str
+    action: Literal["pause", "resume", "abort"]
+
+
 @router.post("/start")
-def start_pipeline():
-    return {"message": "Pipeline started"}
+async def start_pipeline(body: StartBody, session: Session = Depends(get_session)):
+    project = session.get(Project, body.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if body.project_id in _running_tasks and not _running_tasks[body.project_id].done():
+        raise HTTPException(status_code=409, detail="Pipeline already running for this project")
+
+    task = asyncio.create_task(
+        run_pipeline(body.project_id, body.start_from_step, body.settings)
+    )
+    _running_tasks[body.project_id] = task
+
+    return {"status": "started", "project_id": body.project_id, "step": body.start_from_step}
+
 
 @router.post("/control")
-def control_pipeline():
-    return {"message": "Pipeline control"}
+async def control_pipeline(body: ControlBody, session: Session = Depends(get_session)):
+    project = session.get(Project, body.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if body.action == "abort":
+        request_abort(body.project_id)
+        # Also cancel the asyncio task as a hard fallback
+        task = _running_tasks.get(body.project_id)
+        if task and not task.done():
+            task.cancel()
+        _running_tasks.pop(body.project_id, None)
+
+    elif body.action == "pause":
+        request_pause(body.project_id)
+
+    elif body.action == "resume":
+        request_resume(body.project_id)
+
+    return {"status": body.action, "project_id": body.project_id}
+
 
 @router.get("/status")
-def get_status():
-    return {"status": "idle"}
+async def get_status(
+    project_id: Optional[str] = None,
+    session: Session = Depends(get_session),
+):
+    if project_id:
+        project = session.get(Project, project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        running = project_id in _running_tasks and not _running_tasks[project_id].done()
+        return {
+            "project_id": project_id,
+            "running": running,
+            "current_step": project.current_step,
+            "step_status": project.get_step_status(),
+        }
+
+    return [
+        {"project_id": pid, "running": not task.done()}
+        for pid, task in _running_tasks.items()
+    ]
+
+
+
+@router.get("/status")
+async def get_status(project_id: Optional[str] = None, session: Session = Depends(get_session)):
+    if project_id:
+        project = session.get(Project, project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        running = project_id in _running_tasks and not _running_tasks[project_id].done()
+        return {
+            "project_id": project_id,
+            "running": running,
+            "current_step": project.current_step,
+            "step_status": project.get_step_status(),
+        }
+
+    return [
+        {"project_id": pid, "running": not task.done()}
+        for pid, task in _running_tasks.items()
+    ]

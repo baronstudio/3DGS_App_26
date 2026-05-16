@@ -1,0 +1,7 @@
+# Gitignore file
+
+# Ignore all content in the projects folder
+3dgs-pipeline-app/projects/*
+
+# Allow the projects folder itself
+!3dgs-pipeline-app/projects/

@@ -1,7 +1,161 @@
-import React from 'react';
+import React, { lazy, Suspense, useState } from 'react';
+import { AlertTriangle, ChevronRight, FolderOpen, PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import StepNav from './StepNav';
+import LiveLog from '@/components/panels/LiveLog';
+import { usePipelineStore } from '@/store/pipelineStore';
+import { usePipeline } from '@/hooks/usePipeline';
+import { useProjects } from '@/hooks/useProjects';
+
+const Step1 = lazy(() => import('./steps/Step1_Import'));
+const Step2 = lazy(() => import('./steps/Step2_Extract'));
+const Step3 = lazy(() => import('./steps/Step3_RC'));
+const Step4 = lazy(() => import('./steps/Step4_LFS'));
+const Step5 = lazy(() => import('./steps/Step5_Export'));
+const Step6 = lazy(() => import('./steps/Step6_Blender'));
+
+const STEP_COMPONENTS: Record<number, React.LazyExoticComponent<React.FC>> = {
+  1: Step1,
+  2: Step2,
+  3: Step3,
+  4: Step4,
+  5: Step5,
+  6: Step6,
+};
 
 const WizardShell: React.FC = () => {
-  return <div>Wizard Shell</div>;
+  const { currentProjectId, currentStep, projects, pipelineRunning, setCurrentProject, setCurrentStep } = usePipelineStore();
+  const { controlPipeline } = usePipeline();
+  const { createProject, selectProject } = useProjects();
+  const [logVisible, setLogVisible] = useState(true);
+
+  const currentProject = projects.find((p) => p.id === currentProjectId);
+  const StepComponent = STEP_COMPONENTS[currentStep];
+
+  const handleAbort = async () => {
+    if (!currentProjectId) return;
+    const confirmed = window.confirm('Abort the current pipeline run? This cannot be undone.');
+    if (!confirmed) return;
+    await controlPipeline(currentProjectId, 'abort');
+  };
+
+  const handleNewProject = async () => {
+    const name = prompt('Project name:');
+    if (!name?.trim()) return;
+    setCurrentProject(null);
+    setCurrentStep(1);
+    await createProject(name.trim());
+  };
+
+  const handleSelectProject = (id: string, step: number) => {
+    selectProject(id);
+    setCurrentStep(Math.max(step, 1));
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-900 text-slate-100">
+      {/* TOP BAR */}
+      <header className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          {/* Projects dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-1 text-slate-300 hover:text-slate-100 px-2 h-7">
+                <FolderOpen className="w-4 h-4" />
+                <span className="max-w-[160px] truncate">
+                  {currentProject ? currentProject.name : 'No project'}
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="bottom" className="w-56 bg-slate-800 border-slate-700 text-slate-100">
+              {projects.map((p) => (
+                <DropdownMenuItem
+                  key={p.id}
+                  className="cursor-pointer hover:bg-slate-700"
+                  onClick={() => handleSelectProject(p.id, p.current_step)}
+                >
+                  <span className="truncate">{p.name}</span>
+                </DropdownMenuItem>
+              ))}
+              {projects.length > 0 && <DropdownMenuSeparator className="bg-slate-700" />}
+              <DropdownMenuItem className="cursor-pointer hover:bg-slate-700 gap-2" onClick={handleNewProject}>
+                <Plus className="w-3 h-3" />
+                New Project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <ChevronRight className="w-4 h-4 text-slate-500" />
+          <span style={{ color: '#00D4FF' }}>Step {currentStep}/6</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setLogVisible((v) => !v)}
+            className="text-slate-400 hover:text-slate-100"
+          >
+            {logVisible ? (
+              <PanelRightClose className="w-4 h-4" />
+            ) : (
+              <PanelRightOpen className="w-4 h-4" />
+            )}
+          </Button>
+          <Separator orientation="vertical" className="h-5 bg-slate-600" />
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={!pipelineRunning || !currentProjectId}
+            onClick={handleAbort}
+            className="gap-1"
+          >
+            <AlertTriangle className="w-4 h-4" />
+            Abort
+          </Button>
+        </div>
+      </header>
+
+      {/* BODY */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* LEFT: Step navigator */}
+        <aside className="w-[200px] shrink-0 border-r border-slate-700 overflow-y-auto">
+          <StepNav />
+        </aside>
+
+        {/* CENTER: Current step content */}
+        <main className="flex-1 overflow-y-auto p-4">
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center h-full text-slate-400">
+                Loading step...
+              </div>
+            }
+          >
+            {StepComponent ? (
+              <StepComponent />
+            ) : (
+              <div className="text-slate-400">Unknown step</div>
+            )}
+          </Suspense>
+        </main>
+
+        {/* RIGHT: Live log (collapsible) */}
+        {logVisible && (
+          <aside className="w-[300px] shrink-0 border-l border-slate-700 overflow-hidden flex flex-col">
+            <LiveLog />
+          </aside>
+        )}
+      </div>
+    </div>
+  );
 };
 
 export default WizardShell;
