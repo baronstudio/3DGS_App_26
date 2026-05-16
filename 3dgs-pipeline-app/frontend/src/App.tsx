@@ -4,22 +4,20 @@ import { SetupScreen } from './pages/SetupScreen';
 import { useState, useContext } from 'react';
 import { SettingsContext } from './providers/SettingsProvider';
 
+import { MainPage } from './pages/MainPage';
+
 function AppContent() {
   const settingsContext = useContext(SettingsContext);
-  const [proceeded, setProceeded] = useState(false);
+  // For now, we'll always show the main page.
+  // We can add back the setup screen logic later if needed.
+  const proceeded = true; //useState(false);
 
   if (!proceeded || !settingsContext?.settings) {
-    return <SetupScreen onProceed={() => setProceeded(true)} />;
+    // return <SetupScreen onProceed={() => setProceeded(true)} />;
+    // For now, let's assume settings are loaded and we can proceed.
   }
 
-  return (
-    <>
-      <h1 className="text-3xl font-bold underline">
-        3DGS Pipeline App
-      </h1>
-      {/* The main app would go here */}
-    </>
-  );
+  return <MainPage />;
 }
 
 
