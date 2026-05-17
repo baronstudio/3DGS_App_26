@@ -8,6 +8,7 @@ import type {
   LfsMetric,
   ExportFile,
   StepName,
+  LogLevel,
 } from '../types';
 
 const MAX_LOGS = 500;
@@ -21,6 +22,9 @@ interface PipelineState {
   stepStatuses: Record<number, StepStatus>;
   currentStep: number;
   pipelineRunning: boolean;
+
+  // WebSocket connection status
+  wsConnected: boolean;
 
   // Logs
   logs: LogEntry[];
@@ -40,6 +44,9 @@ interface PipelineState {
   removeProject: (id: string) => void;
   setCurrentProject: (id: string | null) => void;
 
+  // Actions — websocket
+  setWsConnected: (connected: boolean) => void;
+
   // Actions — logs
   addLog: (entry: LogEntry) => void;
   clearLogs: () => void;
@@ -49,6 +56,7 @@ interface PipelineState {
   setStepStatus: (step: number, status: StepStatus) => void;
   setStepProgress: (step: StepName, progress: number) => void;
   setPipelineRunning: (running: boolean) => void;
+  confirmStep: (step: number) => void;
 
   // Actions — LFS metrics
   addLfsMetric: (metric: LfsMetric) => void;
@@ -57,6 +65,9 @@ interface PipelineState {
   // Actions — export files
   setExportFiles: (files: ExportFile[]) => void;
   addExportFile: (file: ExportFile) => void;
+
+  // Hydrate wizard state from a persisted project (on project selection / page reload)
+  hydrateFromProject: (project: Project) => void;
 
   // WebSocket message dispatcher
   handleWsMessage: (msg: WsMessage) => void;
@@ -82,6 +93,7 @@ export const usePipelineStore = create<PipelineState>()(
     currentStep: 1,
     pipelineRunning: false,
 
+    wsConnected: false,
     logs: [],
     stepProgress: {},
     lfsMetrics: [],
@@ -102,6 +114,10 @@ export const usePipelineStore = create<PipelineState>()(
 
     setCurrentProject: (id) =>
       set((state) => { state.currentProjectId = id; }),
+
+    // WebSocket connection status
+    setWsConnected: (connected) =>
+      set((state) => { state.wsConnected = connected; }),
 
     // Log actions
     addLog: (entry) =>
@@ -128,6 +144,9 @@ export const usePipelineStore = create<PipelineState>()(
     setPipelineRunning: (running) =>
       set((state) => { state.pipelineRunning = running; }),
 
+    confirmStep: (step) =>
+      set((state) => { state.stepStatuses[step] = 'done'; }),
+
     // LFS metrics actions
     addLfsMetric: (metric) =>
       set((state) => { state.lfsMetrics.push(metric); }),
@@ -142,6 +161,48 @@ export const usePipelineStore = create<PipelineState>()(
     addExportFile: (file) =>
       set((state) => { state.exportFiles.push(file); }),
 
+    // Restore wizard state from a saved project
+    hydrateFromProject: (project) =>
+      set((state) => {
+        const prevStatuses = { ...state.stepStatuses };
+        const prevCurrentStep = state.currentStep;
+
+        // Reset all steps to pending, then apply persisted statuses
+        state.stepStatuses = { 1: 'pending', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending', 6: 'pending' };
+        const saved = project.step_status as Record<string, string>;
+        if (saved && typeof saved === 'object') {
+          Object.entries(saved).forEach(([k, v]) => {
+            const idx = parseInt(k, 10);
+            if (idx >= 1 && idx <= 6 && ['pending', 'running', 'done', 'error'].includes(v)) {
+              state.stepStatuses[idx] = v as StepStatus;
+            }
+          });
+        }
+        state.currentStep = Math.max(project.current_step, 1);
+
+        // ── Debug log ──────────────────────────────────────────────────────
+        console.debug(
+          '[WIZARD-DEBUG] hydrateFromProject',
+          `project='${project.name}'`,
+          `DB_current_step=${project.current_step} → UI_currentStep=${state.currentStep}`,
+          `prev_currentStep=${prevCurrentStep}`,
+          `DB_step_status=`, saved,
+          `prev_stepStatuses=`, prevStatuses,
+          `new_stepStatuses=`, { ...state.stepStatuses },
+        );
+        state.logs.push({
+          id: `hydrate-${++logCounter}`,
+          timestamp: new Date().toISOString(),
+          step: 'pipeline',
+          level: 'DEBUG',
+          message:
+            `[WIZARD-DEBUG] hydrateFromProject: project='${project.name}'`
+            + ` DB_current_step=${project.current_step}→UI=${state.currentStep}`
+            + ` stepStatuses=${JSON.stringify(state.stepStatuses)}`
+            + ` ⚠️ Watch Step5 useEffect: will auto-start if step4=done & step5=pending & currentStep=5`,
+        });
+      }),
+
     // WebSocket message dispatcher
     handleWsMessage: (msg) =>
       set((state) => {
@@ -151,7 +212,7 @@ export const usePipelineStore = create<PipelineState>()(
               id: `log-${++logCounter}`,
               timestamp: msg.timestamp,
               step: msg.step,
-              level: msg.level ?? 'INFO',
+              level: (msg.level as LogLevel) ?? 'INFO',
               message: msg.message ?? '',
             };
             state.logs.push(entry);
@@ -163,6 +224,22 @@ export const usePipelineStore = create<PipelineState>()(
           case 'progress': {
             if (msg.progress !== undefined) {
               state.stepProgress[msg.step] = msg.progress;
+              // progress=1.0 means the step runner completed — update status
+              // (fallback for messages that carry progress but no explicit status field)
+              if (msg.progress >= 1.0) {
+                const stepIdx = stepNameToIndex[msg.step as StepName];
+                if (stepIdx !== undefined && state.stepStatuses[stepIdx] === 'running') {
+                  const lvl = msg.level ?? 'SUCCESS';
+                  if (lvl === 'SUCCESS' || lvl === 'INFO') {
+                    state.stepStatuses[stepIdx] = 'done';
+                    state.pipelineRunning = false;
+                    console.debug(
+                      `[WIZARD-DEBUG] progress=1.0 on step ${msg.step}(${stepIdx})`
+                      + ' → stepStatuses set to done, pipelineRunning=false',
+                    );
+                  }
+                }
+              }
             }
             break;
           }
@@ -186,7 +263,7 @@ export const usePipelineStore = create<PipelineState>()(
             break;
           }
           case 'status': {
-            const stepIdx = stepNameToIndex[msg.step];
+            const stepIdx = stepNameToIndex[msg.step as StepName];
             if (stepIdx !== undefined && msg.level) {
               const statusMap: Record<string, StepStatus> = {
                 INFO: 'running',
@@ -196,16 +273,31 @@ export const usePipelineStore = create<PipelineState>()(
               };
               const newStatus = statusMap[msg.level];
               if (newStatus) {
+                const prevStatus = state.stepStatuses[stepIdx];
                 state.stepStatuses[stepIdx] = newStatus;
+                console.debug(
+                  `[WIZARD-DEBUG] WS status: step=${msg.step}(${stepIdx})`
+                  + ` ${prevStatus} → ${newStatus}  pipelineRunning=${state.pipelineRunning}`,
+                );
+                state.logs.push({
+                  id: `status-${++logCounter}`,
+                  timestamp: msg.timestamp ?? new Date().toISOString(),
+                  step: msg.step,
+                  level: 'DEBUG',
+                  message:
+                    `[WIZARD-DEBUG] stepStatus: step=${msg.step}(${stepIdx})`
+                    + ` ${prevStatus}→${newStatus}`
+                    + (newStatus === 'done'
+                      ? ' ✅ Waiting for user click to advance wizard'
+                      : ''),
+                });
                 if (newStatus === 'running') {
                   state.currentStep = stepIdx;
                   state.pipelineRunning = true;
                 }
                 if (newStatus === 'done' || newStatus === 'error') {
-                  const allDone = Object.values(state.stepStatuses).every(
-                    (s) => s === 'done' || s === 'error'
-                  );
-                  if (allDone) state.pipelineRunning = false;
+                  // Single-step pipeline: mark as not running as soon as the step finishes
+                  state.pipelineRunning = false;
                 }
               }
             }

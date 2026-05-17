@@ -1,6 +1,6 @@
--addFolder "$(arg0)"
+-addFolder "$(arg1)"
 -align
 -selectMaximalComponent
--exportRegistration "$(arg1)/registration.csv" "$(arg2)/rc_reg_params.xml"
--exportSparsePointCloud "$(arg1)/pointcloud.ply" "$(arg2)/rc_ply_params.xml"
+-exportRegistration "$(arg2)/transforms.json"
+-exportSparsePointCloud "$(arg2)/pointcloud.ply"
 -quit

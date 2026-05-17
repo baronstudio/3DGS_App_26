@@ -1,5 +1,9 @@
 import React from 'react';
 import WizardShell from '@/components/wizard/WizardShell';
 
-export const MainPage: React.FC = () => <WizardShell />;
+interface MainPageProps {
+  onBackToHome?: () => void;
+}
+
+export const MainPage: React.FC<MainPageProps> = ({ onBackToHome }) => <WizardShell onBackToHome={onBackToHome} />;
 

@@ -29,7 +29,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ step, label }) => {
 
   // Derive active step status from store by step name mapping
   const stepNameToIndex: Record<string, number> = {
-    extract: 1, rc: 2, lfs: 3, export: 4, blender: 5,
+    extract: 2, rc: 3, lfs: 4, export: 5, blender: 6,
   };
   const stepIndex = stepNameToIndex[step];
   const stepStatus = stepIndex !== undefined ? stepStatuses[stepIndex] : undefined;

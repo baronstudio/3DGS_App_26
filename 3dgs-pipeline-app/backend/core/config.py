@@ -55,12 +55,29 @@ def load_config() -> AppConfig:
     )
 
 
-def save_config(cfg: AppConfig) -> None:
-    flat: dict = {}
-    flat.update(cfg.tools.model_dump())
-    flat.update(cfg.stubs.model_dump())
+def save_config(cfg) -> None:
+    """Save config to disk. Accepts AppConfig or a flat dict of overrides."""
+    if isinstance(cfg, dict):
+        # Merge incoming dict over the existing file so no field is lost.
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                flat: dict = json.load(f)
+        except Exception:
+            flat = {}
+        flat.update(cfg)
+    else:
+        flat = {}
+        flat.update(cfg.tools.model_dump())
+        flat.update(cfg.stubs.model_dump())
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(flat, f, indent=4)
+
+
+def reload_config() -> AppConfig:
+    """Reload config from disk and update the module-level singleton."""
+    global app_config
+    app_config = load_config()
+    return app_config
 
 
 app_config: AppConfig = load_config()

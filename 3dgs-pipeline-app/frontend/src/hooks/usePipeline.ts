@@ -11,7 +11,7 @@ export const usePipeline = () => {
   ) => {
     const response = await client.post('/pipeline/start', {
       project_id: projectId,
-      from_step: fromStep,
+      start_from_step: fromStep,
       settings,
     });
     setPipelineRunning(true);

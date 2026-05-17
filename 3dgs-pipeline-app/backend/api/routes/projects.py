@@ -20,6 +20,17 @@ def get_project_path(slug: str) -> Path:
     return PROJECTS_DIR / slug
 
 
+def _get_thumbnail_url(slug: str) -> Optional[str]:
+    frames_dir = PROJECTS_DIR / slug / "frames"
+    if not frames_dir.exists():
+        return None
+    for ext in (".jpg", ".jpeg", ".png"):
+        files = sorted(frames_dir.glob(f"*{ext}"))
+        if files:
+            return f"/static/{slug}/frames/{files[0].name}"
+    return None
+
+
 def project_to_dict(project: Project) -> dict:
     return {
         "id": project.id,
@@ -33,6 +44,7 @@ def project_to_dict(project: Project) -> dict:
         "frame_count": project.frame_count,
         "settings_json": project.settings_json,
         "error_message": project.error_message,
+        "thumbnail_url": _get_thumbnail_url(project.slug),
     }
 
 

@@ -13,6 +13,12 @@ interface FrameGalleryProps {
   onDelete?: (filenames: string[]) => void;
 }
 
+interface FrameApiResponse {
+  frames: FrameInfo[];
+  total: number;
+  blurry_count: number;
+}
+
 const VRAM_MB_PER_FRAME = 5;
 
 export const FrameGallery: React.FC<FrameGalleryProps> = ({ projectId, onDelete }) => {
@@ -26,8 +32,8 @@ export const FrameGallery: React.FC<FrameGalleryProps> = ({ projectId, onDelete 
 
   const fetchFrames = useCallback(async () => {
     try {
-      const res = await client.get<FrameInfo[]>(`/files/${projectId}/frames`);
-      setFrames(res.data);
+      const res = await client.get<FrameApiResponse>(`/files/${projectId}/frames`);
+      setFrames(res.data.frames ?? []);
     } catch {
       // ignore
     } finally {

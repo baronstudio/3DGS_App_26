@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, ArrowRight, Loader2 } from 'lucide-react';
+import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, ArrowRight, Loader2, CheckCircle, ImageOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { useProjects } from '@/hooks/useProjects';
 import apiClient from '@/api/client';
+import type { StepStatus } from '@/types';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -29,7 +30,7 @@ interface InputFile {
 // Sub-component: manage sources for an existing project
 // ---------------------------------------------------------------------------
 const ManageSources: React.FC = () => {
-  const { currentProjectId, projects, setCurrentStep } = usePipelineStore();
+  const { currentProjectId, projects, stepStatuses, setCurrentStep, confirmStep } = usePipelineStore();
   const currentProject = projects.find((p) => p.id === currentProjectId);
 
   const [files, setFiles] = useState<InputFile[]>([]);
@@ -125,6 +126,24 @@ const ManageSources: React.FC = () => {
   };
 
   const hasVideo = files.some((f) => /\.(mp4|mov)$/i.test(f.filename));
+
+  const handleValidate = async () => {
+    confirmStep(1);
+    setCurrentStep(2);
+    if (currentProjectId) {
+      const statusForApi: Record<string, string> = {};
+      Object.entries(stepStatuses).forEach(([k, v]) => { statusForApi[k] = v; });
+      statusForApi['1'] = 'done';
+      try {
+        await apiClient.put(`/projects/${currentProjectId}`, {
+          step_status: statusForApi,
+          current_step: 2,
+        });
+      } catch {
+        // non-blocking — navigation already happened
+      }
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
@@ -231,12 +250,12 @@ const ManageSources: React.FC = () => {
       )}
 
       <Button
-        onClick={() => setCurrentStep(2)}
+        onClick={handleValidate}
         disabled={!hasVideo}
-        className="bg-cyan-600 hover:bg-cyan-500 text-white gap-2"
+        className="bg-green-700 hover:bg-green-600 text-white gap-2"
       >
-        Continue to Extract Frames
-        <ArrowRight className="w-4 h-4" />
+        <CheckCircle className="w-4 h-4" />
+        Validate &amp; Continue to Extract Frames
       </Button>
       {!hasVideo && (
         <p className="text-xs text-slate-500 text-center -mt-4">
@@ -251,7 +270,7 @@ const ManageSources: React.FC = () => {
 // Sub-component: create a new project
 // ---------------------------------------------------------------------------
 const CreateProject: React.FC = () => {
-  const { projects, setCurrentProject, setCurrentStep } = usePipelineStore();
+  const { projects, setCurrentProject, setCurrentStep, hydrateFromProject } = usePipelineStore();
   const { createProject } = useProjects();
 
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
@@ -327,8 +346,13 @@ const CreateProject: React.FC = () => {
   };
 
   const handleResumeProject = (id: string) => {
+    const project = projects.find((p) => p.id === id);
     setCurrentProject(id);
-    setCurrentStep(2);
+    if (project) {
+      hydrateFromProject(project);
+    } else {
+      setCurrentStep(2);
+    }
   };
 
   const uploadLabel = droppedFile && loading
@@ -441,16 +465,56 @@ const CreateProject: React.FC = () => {
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
             Resume existing project
           </p>
-          <div className="flex flex-wrap gap-2">
-            {projects.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => handleResumeProject(p.id)}
-                className="px-3 py-1 rounded-full text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 transition-colors"
-              >
-                {p.name}
-              </button>
-            ))}
+          <div className="flex flex-col gap-2">
+            {projects.map((p) => {
+              const TOTAL_STEPS = 6;
+              const stepStatus = p.step_status as Record<string, StepStatus> | undefined;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => handleResumeProject(p.id)}
+                  className="flex items-center gap-3 rounded-md bg-slate-700/60 hover:bg-slate-700 border border-slate-600 px-3 py-2 text-left transition-colors"
+                >
+                  {/* Thumbnail */}
+                  <div className="w-12 h-12 shrink-0 rounded overflow-hidden bg-slate-800 border border-slate-600 flex items-center justify-center">
+                    {p.thumbnail_url ? (
+                      <img
+                        src={`http://localhost:8000${p.thumbnail_url}`}
+                        alt="thumb"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <ImageOff className="w-5 h-5 text-slate-600" />
+                    )}
+                  </div>
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-100 truncate">{p.name}</p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <div className="flex gap-0.5">
+                        {Array.from({ length: TOTAL_STEPS }, (_, i) => {
+                          const s = stepStatus?.[String(i + 1)];
+                          return (
+                            <div
+                              key={i}
+                              className={`h-1.5 w-4 rounded-full ${
+                                s === 'done' ? 'bg-green-500' :
+                                s === 'running' ? 'bg-cyan-400 animate-pulse' :
+                                s === 'error' ? 'bg-red-500' :
+                                'bg-slate-600'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <span className="text-xs text-slate-400">
+                        {p.current_step > 0 ? `Step ${p.current_step}/${TOTAL_STEPS}` : 'Not started'}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

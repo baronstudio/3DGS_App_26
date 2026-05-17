@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useProjects } from '@/hooks/useProjects';
 import { usePipelineStore } from '@/store/pipelineStore';
-import { CheckCircle2, Circle, AlertCircle, Loader2, Plus, Trash2, PlayCircle } from 'lucide-react';
+import { Plus, Trash2, PlayCircle, ImageOff } from 'lucide-react';
 import type { StepStatus } from '@/types';
 
 const STEP_LABELS: Record<number, string> = {
@@ -16,6 +16,8 @@ const STEP_LABELS: Record<number, string> = {
   5: 'Export',
   6: 'Blender',
 };
+
+const TOTAL_STEPS = 6;
 
 function relativeDate(isoString: string): string {
   const diff = Date.now() - new Date(isoString).getTime();
@@ -31,22 +33,13 @@ function relativeDate(isoString: string): string {
   return `${months} month${months > 1 ? 's' : ''} ago`;
 }
 
-function StatusIcon({ status }: { status: StepStatus | undefined }) {
-  switch (status) {
-    case 'done':    return <CheckCircle2 className="w-4 h-4 text-green-400" />;
-    case 'running': return <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />;
-    case 'error':   return <AlertCircle className="w-4 h-4 text-red-400" />;
-    default:        return <Circle className="w-4 h-4 text-slate-500" />;
-  }
-}
-
 interface ProjectListProps {
   /** Called after a project is selected/created, to navigate to the wizard */
   onNavigate?: () => void;
 }
 
 export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
-  const { projects, setCurrentProject, setCurrentStep } = usePipelineStore();
+  const { projects, setCurrentProject, setCurrentStep, hydrateFromProject } = usePipelineStore();
   const { createProject, deleteProject, selectProject } = useProjects();
 
   const handleNew = () => {
@@ -58,8 +51,13 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
   };
 
   const handleResume = (id: string, step: number) => {
+    const project = projects.find((p) => p.id === id);
     selectProject(id);
-    setCurrentStep(Math.max(step, 1));
+    if (project) {
+      hydrateFromProject(project);
+    } else {
+      setCurrentStep(Math.max(step, 1));
+    }
     onNavigate?.();
   };
 
@@ -85,18 +83,53 @@ export const ProjectList: React.FC<ProjectListProps> = ({ onNavigate }) => {
         ) : (
           <ul className="space-y-2">
             {projects.map((p) => {
-              const stepStatus = p.step_status as Record<string, StepStatus> | undefined;
-              const currentStepStatus = stepStatus?.[String(p.current_step)] as StepStatus | undefined;
               return (
                 <li
                   key={p.id}
                   className="flex items-center gap-3 rounded-md bg-slate-900/60 px-3 py-2 border border-slate-700"
                 >
-                  <StatusIcon status={currentStepStatus} />
+                  {/* Thumbnail */}
+                  <div className="w-12 h-12 shrink-0 rounded overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center">
+                    {p.thumbnail_url ? (
+                      <img
+                        src={`http://localhost:8000${p.thumbnail_url}`}
+                        alt="thumbnail"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <ImageOff className="w-5 h-5 text-slate-600" />
+                    )}
+                  </div>
+
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-slate-100 truncate">{p.name}</p>
                     <p className="text-xs text-slate-500">{relativeDate(p.created_at)}</p>
+                    {/* Step progress */}
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <div className="flex gap-0.5">
+                        {Array.from({ length: TOTAL_STEPS }, (_, i) => {
+                          const stepNum = i + 1;
+                          const s = (p.step_status as Record<string, StepStatus>)?.[String(stepNum)];
+                          return (
+                            <div
+                              key={stepNum}
+                              className={`h-1.5 w-4 rounded-full ${
+                                s === 'done' ? 'bg-green-500' :
+                                s === 'running' ? 'bg-cyan-400 animate-pulse' :
+                                s === 'error' ? 'bg-red-500' :
+                                stepNum <= p.current_step ? 'bg-slate-400' : 'bg-slate-700'
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+                      <span className="text-xs text-slate-500">
+                        {p.current_step > 0 ? `${p.current_step}/${TOTAL_STEPS}` : '–'}
+                      </span>
+                    </div>
                   </div>
+
                   <Badge variant="outline" className="text-xs text-slate-400 border-slate-600 shrink-0">
                     {STEP_LABELS[p.current_step] ?? `Step ${p.current_step}`}
                   </Badge>

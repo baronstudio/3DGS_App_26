@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { usePipelineStore } from '../store/pipelineStore';
+import apiClient from '../api/client';
 import type { WsMessage } from '../types';
 
 const WS_URL = 'ws://localhost:8000/ws/logs';
@@ -24,13 +25,52 @@ export const useWebSocket = () => {
     ws.onopen = () => {
       setConnected(true);
       retriesRef.current = 0;
+      // Notify store + add a visible log entry so the LiveLog is never empty
+      usePipelineStore.getState().setWsConnected(true);
+      usePipelineStore.getState().addLog({
+        id: `ws-connect-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        step: 'pipeline',
+        level: 'DEBUG',
+        message: `[WS] ✅ WebSocket connected → ${WS_URL}`,
+      });
     };
 
     ws.onmessage = (event: MessageEvent) => {
       try {
         const msg = JSON.parse(event.data as string) as WsMessage;
         setLastMessage(msg);
+
+        // ── Debug: log every raw WS message to console AND LiveLog ──────
+        console.debug('[WS-RAW]', msg);
+        usePipelineStore.getState().addLog({
+          id: `ws-raw-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: msg.timestamp ?? new Date().toISOString(),
+          step: msg.step ?? 'ws',
+          level: 'DEBUG',
+          message: `[WS-RAW] type=${msg.type} step=${msg.step} level=${msg.level ?? '-'}`
+            + (msg.progress !== undefined ? ` progress=${msg.progress}` : '')
+            + (msg.status !== undefined ? ` status=${(msg as WsMessage & { status?: string }).status}` : '')
+            + (msg.message ? ` | ${msg.message}` : ''),
+        });
+
         usePipelineStore.getState().handleWsMessage(msg);
+
+        // After a step finishes (success or error), persist step_status + current_step to the backend
+        if (msg.type === 'status' && (msg.level === 'SUCCESS' || msg.level === 'ERROR')) {
+          const state = usePipelineStore.getState();
+          const projectId = state.currentProjectId;
+          if (projectId) {
+            const stepStatusDict: Record<string, string> = {};
+            Object.entries(state.stepStatuses).forEach(([k, v]) => {
+              stepStatusDict[k] = v;
+            });
+            apiClient.put(`/projects/${projectId}`, {
+              step_status: stepStatusDict,
+              current_step: state.currentStep,
+            }).catch(() => { /* persistence is best-effort */ });
+          }
+        }
       } catch {
         // malformed message — ignore
       }
@@ -38,11 +78,17 @@ export const useWebSocket = () => {
 
     ws.onclose = () => {
       setConnected(false);
+      usePipelineStore.getState().setWsConnected(false);
+      usePipelineStore.getState().addLog({
+        id: `ws-disconnect-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        step: 'pipeline',
+        level: 'WARNING',
+        message: '[WS] ⚠️ WebSocket disconnected — attempting reconnect...',
+      });
       wsRef.current = null;
 
       // Only auto-reconnect if the component is still intentionally mounted
-      // (avoids a spurious second connection when React StrictMode unmounts
-      // and immediately remounts the component during development).
       if (mountedRef.current && retriesRef.current < MAX_RETRIES) {
         const delay = Math.min(1000 * 2 ** retriesRef.current, 30_000);
         retriesRef.current += 1;

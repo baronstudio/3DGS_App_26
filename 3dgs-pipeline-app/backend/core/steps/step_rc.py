@@ -1,11 +1,115 @@
 import asyncio
+import csv
+import json
+import math
 import random
 import shutil
+import subprocess
 from pathlib import Path
 
 from backend.core.config import app_config
 
 _STUB_ASSETS = Path(__file__).parents[3] / "tools" / "test_assets"
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _build_stub_transforms_json(project_path: Path, rc_output: Path) -> None:
+    """Generate a transforms.json (NeRF format) compatible with LichtFeld Studio.
+
+    Reads stub_registration.csv for known cameras and produces orbital poses
+    for any additional frames found in project/frames/.
+    Copies all frame images to rc_output/images/.
+    """
+    frames_dir = project_path / "frames"
+    images_dir = rc_output / "images"
+    images_dir.mkdir(exist_ok=True)
+
+    frame_files = sorted(
+        (f for f in frames_dir.iterdir()
+         if f.suffix.lower() in (".jpg", ".jpeg", ".png")),
+        key=lambda f: f.name,
+    )
+
+    default_fl = 2800.0
+    default_w, default_h = 1920, 1080
+    default_cx, default_cy = default_w / 2.0, default_h / 2.0
+
+    # Load stub camera data (up to 3 keyframe entries)
+    stub_cameras = {}
+    stub_csv_path = _STUB_ASSETS / "stub_registration.csv"
+    if stub_csv_path.exists():
+        with open(stub_csv_path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                stub_cameras[row["#name"]] = row
+
+    def _euler_to_c2w(heading_deg, pitch_deg, roll_deg, tx, ty, tz):
+        """ZYX Euler (degrees) + translation → 4×4 camera-to-world matrix."""
+        h = math.radians(heading_deg)
+        p = math.radians(pitch_deg)
+        r = math.radians(roll_deg)
+        sh, ch = math.sin(h), math.cos(h)
+        sp, cp = math.sin(p), math.cos(p)
+        sr, cr = math.sin(r), math.cos(r)
+        return [
+            [ch * cp, ch * sp * sr - sh * cr, ch * sp * cr + sh * sr, tx],
+            [sh * cp, sh * sp * sr + ch * cr, sh * sp * cr - ch * sr, ty],
+            [-sp,     cp * sr,                cp * cr,                 tz],
+            [0.0,     0.0,                    0.0,                    1.0],
+        ]
+
+    total = max(len(frame_files), 1)
+    frames_data = []
+
+    for i, frame_file in enumerate(frame_files):
+        dst = images_dir / frame_file.name
+        if not dst.exists():
+            shutil.copy2(frame_file, dst)
+
+        if frame_file.name in stub_cameras:
+            row = stub_cameras[frame_file.name]
+            fl = float(row["f"])
+            px, py = float(row["ppx"]), float(row["ppy"])
+            c2w = _euler_to_c2w(
+                float(row["heading"]), float(row["pitch"]), float(row["roll"]),
+                float(row["x"]), float(row["y"]), float(row["z"]),
+            )
+        else:
+            # Orbital fallback for frames not in stub CSV
+            angle = 2.0 * math.pi * i / total
+            radius = 3.0
+            x = radius * math.cos(angle)
+            z = radius * math.sin(angle)
+            heading_deg = math.degrees(math.atan2(-math.sin(angle), -math.cos(angle)))
+            c2w = _euler_to_c2w(heading_deg, 0.0, 0.0, x, 0.5, z)
+            fl, px, py = default_fl, default_cx, default_cy
+
+        frames_data.append({
+            "file_path": f"images/{frame_file.name}",
+            "fl_x": fl,
+            "fl_y": fl,
+            "cx": px,
+            "cy": py,
+            "w": default_w,
+            "h": default_h,
+            "transform_matrix": c2w,
+        })
+
+    transforms = {
+        "camera_model": "OPENCV",
+        "fl_x": default_fl,
+        "fl_y": default_fl,
+        "cx": default_cx,
+        "cy": default_cy,
+        "w": default_w,
+        "h": default_h,
+        "aabb_scale": 16,
+        "frames": frames_data,
+    }
+
+    out_path = rc_output / "transforms.json"
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(transforms, fh, indent=2)
 
 
 # ── Real RC runner ──────────────────────────────────────────────────────────
@@ -32,31 +136,36 @@ async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     cmd = [
         str(rc_exe),
-        "-execrscmd", str(scripts_dir / "rc_align_export.rscmd"),
+        "-headless",
+        "-execRSCMD", str(scripts_dir / "rc_align_export.rscmd"),
         str(frames_dir),
         str(rc_output),
-        str(scripts_dir),
     ]
     await broadcast_fn("rc", "INFO", f"[RC] Launching: {' '.join(cmd)}")
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    loop = asyncio.get_running_loop()
+
+    # Use subprocess.Popen + run_in_executor to avoid NotImplementedError
+    # on Windows when uvicorn runs with a SelectorEventLoop.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
 
-    async for raw_line in proc.stdout:
-        line = raw_line.decode("utf-8", errors="replace").strip()
+    while True:
+        raw = await loop.run_in_executor(None, proc.stdout.readline)
+        if not raw:
+            break
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
         await broadcast_fn("rc", _classify_rc_line(line), line)
 
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=1800)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise RuntimeError("RealityCapture timed out after 30 minutes")
+    returncode = await loop.run_in_executor(None, proc.wait)
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"RealityCapture exited with code {proc.returncode}")
+    if returncode != 0:
+        raise RuntimeError(f"RealityCapture exited with code {returncode}")
 
     await broadcast_fn("rc", "SUCCESS", "[RC] Alignment complete.", progress=1.0)
     return {"rc_output": str(rc_output)}
@@ -148,12 +257,13 @@ async def run_rc_stub(project_path: Path, broadcast_fn, settings: dict) -> dict:
     # --- Phase 5: Export (88–100%)
     await broadcast_fn("rc", "INFO", "Selecting maximal component...", progress=0.89)
     await asyncio.sleep(duration * 0.04)
-    await broadcast_fn("rc", "INFO", "Exporting registration (CSV)...", progress=0.93)
+    await broadcast_fn("rc", "INFO", "Exporting registration (transforms.json)...", progress=0.93)
 
     shutil.copy(
         _STUB_ASSETS / "stub_registration.csv",
         rc_output / "registration.csv",
     )
+    _build_stub_transforms_json(project_path, rc_output)
     await asyncio.sleep(duration * 0.03)
     await broadcast_fn("rc", "INFO", "Exporting sparse point cloud (PLY)...", progress=0.97)
     shutil.copy(

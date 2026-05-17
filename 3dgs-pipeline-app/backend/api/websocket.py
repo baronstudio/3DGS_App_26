@@ -49,10 +49,23 @@ async def broadcast(
     progress: Optional[float] = None,
     data: Optional[dict] = None,
     file: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> None:
+    """
+    Broadcast a WebSocket message to all connected clients.
+
+    msg_type priority:
+      status     → explicit step-state transition (step start / done / error / aborted)
+      metric     → LFS training metric (data payload)
+      file_ready → export file available
+      progress   → numeric progress update
+      log        → plain log line (default)
+    """
     timestamp = datetime.now(timezone.utc).isoformat()
 
-    if data is not None:
+    if status is not None:
+        msg_type = "status"
+    elif data is not None:
         msg_type = "metric"
     elif file is not None:
         msg_type = "file_ready"
@@ -72,5 +85,7 @@ async def broadcast(
         payload["data"] = data
     if file is not None:
         payload["file"] = file
+    if status is not None:
+        payload["status"] = status
 
     await manager.broadcast_json(payload)

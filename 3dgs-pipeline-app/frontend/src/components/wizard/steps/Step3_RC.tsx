@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Settings, ChevronRight, AlertTriangle, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
@@ -33,7 +33,7 @@ const Step3_RC: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [rcSettings, setRcSettings] = useState<RCSettingsType>(DEFAULT_RC);
 
-  const status = stepStatuses[2];
+  const status = stepStatuses[3];  // step 3 = rc
   const isRunning = status === 'running';
   const isDone = status === 'done';
   const isStub = settings?.stubs?.rc_stub ?? false;
@@ -118,10 +118,10 @@ const Step3_RC: React.FC = () => {
           <span className="text-sm text-green-400 font-medium">Alignment complete</span>
           <Button
             onClick={() => setCurrentStep(4)}
-            className="bg-cyan-600 hover:bg-cyan-500 text-white gap-1"
+            className="bg-green-700 hover:bg-green-600 text-white gap-1"
           >
-            Proceed to Training
-            <ChevronRight className="w-4 h-4" />
+            <CheckCircle className="w-4 h-4" />
+            Validate &amp; Continue to LFS Training
           </Button>
         </div>
       )}

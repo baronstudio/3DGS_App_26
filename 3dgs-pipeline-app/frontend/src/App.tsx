@@ -36,6 +36,11 @@ function AppContent() {
     setProceeded(true);
   };
 
+  const handleBackToHome = () => {
+    localStorage.removeItem(PROCEEDED_KEY);
+    setProceeded(false);
+  };
+
   // Show SetupScreen until the user explicitly clicks "Proceed" (or projects exist)
   if (!proceeded) {
     return <SetupScreen onProceed={handleProceed} />;
@@ -50,7 +55,7 @@ function AppContent() {
     );
   }
 
-  return <MainPage />;
+  return <MainPage onBackToHome={handleBackToHome} />;
 }
 
 function App() {

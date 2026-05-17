@@ -3,6 +3,7 @@ import math
 import random
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 from backend.core.config import app_config
@@ -39,6 +40,8 @@ async def run_lfs_real(project_path: Path, broadcast_fn, settings: dict) -> dict
 
     cmd = [
         str(lfs_exe),
+        "--headless",
+        "--train",
         "-d", str(rc_output),
         "-o", str(lfs_output),
         "-i", str(iterations),
@@ -47,14 +50,23 @@ async def run_lfs_real(project_path: Path, broadcast_fn, settings: dict) -> dict
     ]
     await broadcast_fn("lfs", "INFO", f"[LFS] Launching: {' '.join(cmd)}")
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+    loop = asyncio.get_running_loop()
+
+    # Use subprocess.Popen + run_in_executor to avoid NotImplementedError
+    # on Windows when uvicorn runs with a SelectorEventLoop.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
 
-    async for raw_line in proc.stdout:
-        line = raw_line.decode("utf-8", errors="replace").strip()
+    while True:
+        raw = await loop.run_in_executor(None, proc.stdout.readline)
+        if not raw:
+            break
+        line = raw.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
         metrics = _parse_lfs_metrics(line)
         await broadcast_fn(
             "lfs", "INFO", line,
@@ -62,14 +74,10 @@ async def run_lfs_real(project_path: Path, broadcast_fn, settings: dict) -> dict
             data=metrics if metrics else None,
         )
 
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=1800)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise RuntimeError("LichtFeld Studio timed out after 30 minutes")
+    returncode = await loop.run_in_executor(None, proc.wait)
 
-    if proc.returncode != 0:
-        raise RuntimeError(f"LichtFeld Studio exited with code {proc.returncode}")
+    if returncode != 0:
+        raise RuntimeError(f"LichtFeld Studio exited with code {returncode}")
 
     await broadcast_fn("lfs", "SUCCESS", "[LFS] Training complete.", progress=1.0)
     return {"lfs_output": str(lfs_output)}

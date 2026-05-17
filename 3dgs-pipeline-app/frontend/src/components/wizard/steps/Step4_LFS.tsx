@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, AlertTriangle, Play, Pause, Square } from 'lucide-react';
+import { Settings, AlertTriangle, Play, Pause, Square, CheckCircle } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -39,7 +39,7 @@ const Step4_LFS: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [lfsSettings, setLfsSettings] = useState<LFSSettingsType>(DEFAULT_LFS);
 
-  const status = stepStatuses[3];
+  const status = stepStatuses[4];  // step 4 = lfs
   const isRunning = status === 'running';
   const isDone = status === 'done';
   const isStub = settings?.stubs?.lfs_stub ?? false;
@@ -222,9 +222,10 @@ const Step4_LFS: React.FC = () => {
           <span className="text-sm text-green-400 font-medium">Training complete</span>
           <Button
             onClick={() => setCurrentStep(5)}
-            className="bg-cyan-600 hover:bg-cyan-500 text-white gap-1"
+            className="bg-green-700 hover:bg-green-600 text-white gap-1"
           >
-            Proceed to Export
+            <CheckCircle className="w-4 h-4" />
+            Validate &amp; Continue to Export
           </Button>
         </div>
       )}

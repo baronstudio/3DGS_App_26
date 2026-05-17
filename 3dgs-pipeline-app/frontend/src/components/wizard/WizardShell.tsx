@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useState } from 'react';
-import { AlertTriangle, ChevronRight, FolderOpen, PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { AlertTriangle, BookOpen, ChevronRight, FolderOpen, Home, PanelBottomClose, PanelBottomOpen, PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -11,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import StepNav from './StepNav';
 import LiveLog from '@/components/panels/LiveLog';
+import HelpPanel from '@/components/panels/HelpPanel';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useProjects } from '@/hooks/useProjects';
@@ -31,11 +33,12 @@ const STEP_COMPONENTS: Record<number, React.LazyExoticComponent<React.FC>> = {
   6: Step6,
 };
 
-const WizardShell: React.FC = () => {
-  const { currentProjectId, currentStep, projects, pipelineRunning, setCurrentProject, setCurrentStep } = usePipelineStore();
+const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) => {
+  const { currentProjectId, currentStep, projects, pipelineRunning, setCurrentProject, setCurrentStep, hydrateFromProject } = usePipelineStore();
   const { controlPipeline } = usePipeline();
   const { createProject, selectProject } = useProjects();
   const [logVisible, setLogVisible] = useState(true);
+  const [helpVisible, setHelpVisible] = useState(true);
 
   const currentProject = projects.find((p) => p.id === currentProjectId);
   const StepComponent = STEP_COMPONENTS[currentStep];
@@ -55,9 +58,14 @@ const WizardShell: React.FC = () => {
     await createProject(name.trim());
   };
 
-  const handleSelectProject = (id: string, step: number) => {
+  const handleSelectProject = (id: string) => {
+    const project = projects.find((p) => p.id === id);
     selectProject(id);
-    setCurrentStep(Math.max(step, 1));
+    if (project) {
+      hydrateFromProject(project);
+    } else {
+      setCurrentStep(1);
+    }
   };
 
   return (
@@ -65,6 +73,22 @@ const WizardShell: React.FC = () => {
       {/* TOP BAR */}
       <header className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
         <div className="flex items-center gap-2 text-sm font-medium">
+          {/* Back to home */}
+          {(onBackToHome || true) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setCurrentProject(null);
+                setCurrentStep(1);
+              }}
+              title="Back to Home"
+              className="text-slate-400 hover:text-slate-100 px-2 h-7"
+            >
+              <Home className="w-4 h-4" />
+            </Button>
+          )}
+          <Separator orientation="vertical" className="h-5 bg-slate-600" />
           {/* Projects dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -80,7 +104,7 @@ const WizardShell: React.FC = () => {
                 <DropdownMenuItem
                   key={p.id}
                   className="cursor-pointer hover:bg-slate-700"
-                  onClick={() => handleSelectProject(p.id, p.current_step)}
+                  onClick={() => handleSelectProject(p.id)}
                 >
                   <span className="truncate">{p.name}</span>
                 </DropdownMenuItem>
@@ -97,16 +121,33 @@ const WizardShell: React.FC = () => {
           <span style={{ color: '#00D4FF' }}>Step {currentStep}/6</span>
         </div>
         <div className="flex items-center gap-2">
+          {/* Toggle Help panel */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setHelpVisible((v) => !v)}
+            title={helpVisible ? 'Hide Help' : 'Show Help'}
+            className="text-slate-400 hover:text-slate-100"
+          >
+            {helpVisible ? (
+              <PanelRightClose className="w-4 h-4" />
+            ) : (
+              <PanelRightOpen className="w-4 h-4" />
+            )}
+            <BookOpen className="w-3 h-3 ml-0.5" />
+          </Button>
+          {/* Toggle Live Log panel */}
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setLogVisible((v) => !v)}
+            title={logVisible ? 'Hide Log' : 'Show Log'}
             className="text-slate-400 hover:text-slate-100"
           >
             {logVisible ? (
-              <PanelRightClose className="w-4 h-4" />
+              <PanelBottomClose className="w-4 h-4" />
             ) : (
-              <PanelRightOpen className="w-4 h-4" />
+              <PanelBottomOpen className="w-4 h-4" />
             )}
           </Button>
           <Separator orientation="vertical" className="h-5 bg-slate-600" />
@@ -124,34 +165,47 @@ const WizardShell: React.FC = () => {
       </header>
 
       {/* BODY */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* LEFT: Step navigator */}
-        <aside className="w-[200px] shrink-0 border-r border-slate-700 overflow-y-auto">
-          <StepNav />
-        </aside>
+      <div className="flex flex-col flex-1 overflow-hidden">
 
-        {/* CENTER: Current step content */}
-        <main className="flex-1 overflow-y-auto p-4">
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center h-full text-slate-400">
-                Loading step...
-              </div>
-            }
-          >
-            {StepComponent ? (
-              <StepComponent />
-            ) : (
-              <div className="text-slate-400">Unknown step</div>
-            )}
-          </Suspense>
-        </main>
-
-        {/* RIGHT: Live log (collapsible) */}
-        {logVisible && (
-          <aside className="w-[300px] shrink-0 border-l border-slate-700 overflow-hidden flex flex-col">
-            <LiveLog />
+        {/* MAIN ROW: left nav + center content + right help */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* LEFT: Step navigator */}
+          <aside className="w-[200px] shrink-0 border-r border-slate-700 overflow-y-auto">
+            <StepNav />
           </aside>
+
+          {/* CENTER: Current step content */}
+          <main className="flex-1 overflow-y-auto p-4">
+            <ErrorBoundary label={`Step ${currentStep}`}>
+              <Suspense
+                fallback={
+                  <div className="flex items-center justify-center h-full text-slate-400">
+                    Loading step...
+                  </div>
+                }
+              >
+                {StepComponent ? (
+                  <StepComponent />
+                ) : (
+                  <div className="text-slate-400">Unknown step</div>
+                )}
+              </Suspense>
+            </ErrorBoundary>
+          </main>
+
+          {/* RIGHT: Help panel (collapsible) */}
+          {helpVisible && (
+            <aside className="w-[300px] shrink-0 border-l border-slate-700 overflow-hidden flex flex-col">
+              <HelpPanel currentStep={currentStep} />
+            </aside>
+          )}
+        </div>
+
+        {/* BOTTOM: Live log (collapsible) */}
+        {logVisible && (
+          <div className="h-[200px] shrink-0 border-t border-slate-700 overflow-hidden flex flex-col">
+            <LiveLog />
+          </div>
         )}
       </div>
     </div>

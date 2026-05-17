@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from backend.core.config import load_config, save_config
+from backend.core.config import load_config, save_config, reload_config
 
 router = APIRouter()
 
@@ -16,6 +16,7 @@ def read_settings():
 def update_settings(new_settings: dict):
     try:
         save_config(new_settings)
-        return {"config": load_config()}
+        updated = reload_config()
+        return {"config": updated}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, Copy, ExternalLink, RefreshCw, FileBox } from 'lucide-react';
+import { Download, Copy, ExternalLink, RefreshCw, FileBox, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
@@ -23,16 +23,16 @@ function fileIcon(filename: string): string {
 }
 
 const Step5_Export: React.FC = () => {
-  const { currentProjectId, exportFiles, stepStatuses } = usePipelineStore();
+  const { currentProjectId, exportFiles, stepStatuses, setCurrentStep } = usePipelineStore();
   const { startPipeline } = usePipeline();
   const { settings } = useSettings();
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const status = stepStatuses[4];
+  const status = stepStatuses[5];  // step 5 = export
   const isRunning = status === 'running';
   const isDone = status === 'done';
-  const prevStatus = stepStatuses[3]; // LFS status
+  const prevStatus = stepStatuses[4]; // LFS status
 
   const supersplatBase = settings?.tools?.supersplat_url ?? 'http://localhost:4000';
 
@@ -40,7 +40,24 @@ const Step5_Export: React.FC = () => {
 
   // Auto-run export when LFS step completes
   useEffect(() => {
+    console.debug(
+      '[WIZARD-DEBUG] Step5 autoRun useEffect fired',
+      `prevStatus(step4)=${prevStatus}`,
+      `status(step5)=${status}`,
+      `currentProjectId=${currentProjectId}`,
+      `→ willAutoStart=${prevStatus === 'done' && status === 'pending' && !!currentProjectId}`,
+    );
     if (prevStatus === 'done' && status === 'pending' && currentProjectId) {
+      usePipelineStore.getState().addLog({
+        id: `autorun-step5-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        step: 'export',
+        level: 'DEBUG',
+        message:
+          '[WIZARD-DEBUG] ⚡ Step5 AUTO-START triggered!'
+          + ` step4=${prevStatus} step5=${status}`
+          + ' — This fires on hydrateFromProject if step4 was previously done.',
+      });
       startPipeline(currentProjectId, 5, {}).catch(() => {});
     }
   }, [prevStatus, status, currentProjectId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -165,6 +182,19 @@ const Step5_Export: React.FC = () => {
             PLY Viewer (SuperSplat)
           </p>
           <PlyViewer projectId={currentProjectId} />
+        </div>
+      )}
+
+      {isDone && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-green-400 font-medium">Export complete</span>
+          <Button
+            onClick={() => setCurrentStep(6)}
+            className="bg-green-700 hover:bg-green-600 text-white gap-1"
+          >
+            <CheckCircle className="w-4 h-4" />
+            Validate &amp; Continue to Blender Scene
+          </Button>
         </div>
       )}
     </div>

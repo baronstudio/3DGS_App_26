@@ -10,19 +10,21 @@ export interface Project {
   frame_count: number;
   settings_json: string;
   error_message: string | null;
+  thumbnail_url: string | null;
 }
 
 export type StepName = 'extract' | 'rc' | 'lfs' | 'export' | 'blender';
 export type StepStatus = 'pending' | 'running' | 'done' | 'error';
-export type LogLevel = 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS';
+export type LogLevel = 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS' | 'DEBUG';
 
 export interface WsMessage {
   type: 'log' | 'progress' | 'metric' | 'status' | 'file_ready';
-  step: StepName;
+  step: string;
   timestamp: string;
-  level?: LogLevel;
+  level?: string;
   message?: string;
   progress?: number;
+  status?: string;
   data?: {
     iteration?: number;
     total_iterations?: number;
@@ -37,7 +39,7 @@ export interface WsMessage {
 export interface LogEntry {
   id: string;
   timestamp: string;
-  step: StepName;
+  step: string;
   level: LogLevel;
   message: string;
 }
