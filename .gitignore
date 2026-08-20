@@ -16,8 +16,12 @@
 __pycache__/
 *.pyc
 
-# Node dependencies + Vite pre-bundle cache
-3dgs-pipeline-app/frontend/node_modules/
+# Node dependencies + Vite pre-bundle cache.
+# Unanchored: there are two — frontend/ and one at the repo root for shadcn-ui.
+node_modules/
+
+# LichtFeld Studio writes imgui.ini into its working directory: local UI state.
+imgui.ini
 
 # Vendored external binaries (LichtFeld Studio, RealityScan, FFmpeg...).
 # LichtFeld ships a 105 MB slang-llvm.dll — over GitHub's hard 100 MB limit.
