@@ -136,6 +136,11 @@ class RCDefaults(BaseModel):
     # -mergeComponents before the maximal-component selection. The verb is not
     # present in every RealityScan build; turn it off if the CLI rejects it.
     merge_components: bool = True
+    # Rewrite RC's export into what the LichtFeld Studio loader reads: top-level
+    # PINHOLE intrinsics in transforms.json, and the sparse cloud rotated from
+    # RC's Z-up frame into the NeRF Y-up one the registration uses. Off only if
+    # a future RC build starts exporting both in agreement.
+    normalise_for_lfs: bool = True
     # Raw .rscmd lines injected before -align, used verbatim. Escape hatch for
     # verbs this app does not model (alignment -set parameters, marker import…)
     # without having to patch step_rc.py.
@@ -144,10 +149,8 @@ class RCDefaults(BaseModel):
 
 class LFSDefaults(BaseModel):
     iterations: int = 30000
-    strategy: Literal["default", "mcmc"] = "default"
-    lr: float = 0.001
-    save_interval: int = 0
-    render_mode: str = "RGB"
+    # v0.5.3 strategies; "default" sends no flag and lets the build pick (MRNF).
+    strategy: Literal["default", "mcmc", "mrnf", "igs+"] = "default"
     eval: bool = False
     save_eval_images: bool = False
     background_color: str = "#000000"
@@ -163,6 +166,21 @@ class BlenderDefaults(BaseModel):
     import_mode: str = "splatforge"
 
 
+class ViewerDefaults(BaseModel):
+    """The 3D preview in steps 3, 4 and 5.
+
+    `preview_max_points` is what the viewer opens at, not a ceiling: the "full
+    quality" button asks for the whole file. It exists because the LFS splat is
+    measured in gigabytes and the first thing you want is a picture, not a
+    perfect picture. 0 opens at full quality.
+    """
+    preview_max_points: int = 1_000_000
+    point_size: float = 1.6
+    show_cameras: bool = True
+    show_camera_path: bool = True
+    background: str = "#0b1220"
+
+
 class AppDefaults(BaseModel):
     schema_version: int = SCHEMA_VERSION
     extract: ExtractDefaults = Field(default_factory=ExtractDefaults)
@@ -171,9 +189,10 @@ class AppDefaults(BaseModel):
     lfs: LFSDefaults = Field(default_factory=LFSDefaults)
     export: ExportDefaults = Field(default_factory=ExportDefaults)
     blender: BlenderDefaults = Field(default_factory=BlenderDefaults)
+    viewer: ViewerDefaults = Field(default_factory=ViewerDefaults)
 
 
-SECTIONS = ("extract", "curate", "rc", "lfs", "export", "blender")
+SECTIONS = ("extract", "curate", "rc", "lfs", "export", "blender", "viewer")
 
 
 # ── Load / save ──────────────────────────────────────────────────────────────

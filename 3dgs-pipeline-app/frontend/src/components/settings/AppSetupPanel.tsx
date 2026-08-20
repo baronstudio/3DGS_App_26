@@ -5,6 +5,7 @@ import {
   Filter,
   FolderCog,
   Gauge,
+  Orbit,
   PackageOpen,
   RotateCcw,
   Scan,
@@ -163,6 +164,7 @@ const SECTIONS: { id: SectionId; label: string; icon: React.ElementType }[] = [
   { id: 'lfs', label: 'LichtFeld', icon: Gauge },
   { id: 'export', label: 'Export', icon: PackageOpen },
   { id: 'blender', label: 'Blender', icon: Boxes },
+  { id: 'viewer', label: '3D viewer', icon: Orbit },
   { id: 'tools', label: 'Tools & stubs', icon: FolderCog },
 ];
 
@@ -527,31 +529,11 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                     value={draft.lfs.strategy}
                     onChange={(v) => patch('lfs', 'strategy', v)}
                     options={[
-                      { value: 'default', label: 'Default' },
+                      { value: 'default', label: 'Default (build choice)' },
+                      { value: 'mrnf', label: 'MRNF' },
                       { value: 'mcmc', label: 'MCMC' },
+                      { value: 'igs+', label: 'IGS+' },
                     ]}
-                  />
-                </Row>
-                <Row label="Learning rate">
-                  <NumField
-                    value={draft.lfs.lr}
-                    step={0.0001}
-                    min={0}
-                    onChange={(v) => patch('lfs', 'lr', v)}
-                  />
-                </Row>
-                <Row label="Save interval" hint="0 = only the final checkpoint.">
-                  <NumField
-                    value={draft.lfs.save_interval}
-                    step={1000}
-                    min={0}
-                    onChange={(v) => patch('lfs', 'save_interval', v)}
-                  />
-                </Row>
-                <Row label="Render mode">
-                  <TextField
-                    value={draft.lfs.render_mode}
-                    onChange={(v) => patch('lfs', 'render_mode', v)}
                   />
                 </Row>
                 <Row label="Evaluation pass">
@@ -611,6 +593,63 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   <TextField
                     value={draft.blender.import_mode}
                     onChange={(v) => patch('blender', 'import_mode', v)}
+                  />
+                </Row>
+              </div>
+            )}
+
+            {draft && section === 'viewer' && (
+              <div className="divide-y divide-slate-800">
+                <p className="text-xs text-slate-500 pb-3">
+                  The 3D preview in steps 3, 4 and 5. It never loads the step output
+                  directly — a trained splat runs to gigabytes — but a decimated copy
+                  built next to it.
+                </p>
+                <Row
+                  label="Open at"
+                  hint="Points or gaussians loaded when the viewer opens. 0 opens at full
+                        quality. The Full button always loads the whole file, whatever
+                        this says."
+                >
+                  <NumField
+                    value={draft.viewer.preview_max_points}
+                    step={100000}
+                    min={0}
+                    onChange={(v) => patch('viewer', 'preview_max_points', Math.max(0, v))}
+                  />
+                </Row>
+                <Row label="Point size" hint="Pixels, sparse clouds only.">
+                  <NumField
+                    value={draft.viewer.point_size}
+                    step={0.1}
+                    min={0.5}
+                    onChange={(v) => patch('viewer', 'point_size', v)}
+                  />
+                </Row>
+                <Row
+                  label="Show cameras"
+                  hint="The registered camera frustums, coloured per sequence, amber where
+                        a neighbouring frame failed to align."
+                >
+                  <div className="flex justify-end">
+                    <Switch
+                      checked={draft.viewer.show_cameras}
+                      onCheckedChange={(v) => patch('viewer', 'show_cameras', v)}
+                    />
+                  </div>
+                </Row>
+                <Row label="Show camera path" hint="The line joining the cameras, cut by cut.">
+                  <div className="flex justify-end">
+                    <Switch
+                      checked={draft.viewer.show_camera_path}
+                      onCheckedChange={(v) => patch('viewer', 'show_camera_path', v)}
+                    />
+                  </div>
+                </Row>
+                <Row label="Background">
+                  <TextField
+                    value={draft.viewer.background}
+                    onChange={(v) => patch('viewer', 'background', v)}
                   />
                 </Row>
               </div>

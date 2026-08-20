@@ -69,12 +69,13 @@ export interface RCSettingsType {
   stub_duration: number;
 }
 
+// LichtFeld Studio v0.5.3 strategies. 'default' sends no --strategy flag and
+// lets the build pick, which is MRNF.
+export type LFSStrategy = 'default' | 'mcmc' | 'mrnf' | 'igs+';
+
 export interface LFSSettingsType {
   iterations: number;
-  strategy: "default" | "mcmc";
-  lr: number;
-  save_interval: number;
-  render_mode: string;
+  strategy: LFSStrategy;
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
@@ -152,10 +153,7 @@ export interface AlignmentReport {
 
 export interface LFSDefaults {
   iterations: number;
-  strategy: 'default' | 'mcmc';
-  lr: number;
-  save_interval: number;
-  render_mode: string;
+  strategy: LFSStrategy;
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
@@ -171,6 +169,15 @@ export interface BlenderDefaults {
   import_mode: string;
 }
 
+export interface ViewerDefaults {
+  /** What the 3D preview opens at. 0 opens at full quality. */
+  preview_max_points: number;
+  point_size: number;
+  show_cameras: boolean;
+  show_camera_path: boolean;
+  background: string;
+}
+
 export interface AppDefaults {
   schema_version: number;
   extract: ExtractDefaults;
@@ -179,6 +186,7 @@ export interface AppDefaults {
   lfs: LFSDefaults;
   export: ExportDefaults;
   blender: BlenderDefaults;
+  viewer: ViewerDefaults;
 }
 
 export type DefaultsSection = keyof Omit<AppDefaults, 'schema_version'>;
@@ -285,4 +293,60 @@ export interface AnalysisResponse {
     frame_count: number;
   } | null;
   analysed: boolean;
+}
+
+// -- 3D viewer (wizard steps 3, 4 and 5) -------------------------------------
+
+export type PreviewSource = 'rc' | 'lfs' | 'export';
+
+/** What the source file turned out to be, not which step wrote it: the RC stub
+ *  writes a gaussian PLY where the real RC writes a plain sparse cloud. */
+export type PreviewKind = 'cloud' | 'splat';
+
+export interface PreviewState {
+  source: PreviewSource;
+  available: boolean;
+  ready: boolean;
+  /** Vertex cap the preview was built at; null means the whole file. */
+  max_count: number | null;
+  source_file?: string;
+  source_bytes?: number;
+  source_url?: string;
+  kind?: PreviewKind;
+  /** Vertices in the source file. */
+  total?: number;
+  /** URL of the built preview, under /static. */
+  url?: string;
+  /** Vertices actually in the preview. */
+  count?: number;
+  bytes?: number;
+  decimated?: boolean;
+  building?: boolean;
+  progress?: number;
+  error?: string;
+}
+
+export interface CameraPose {
+  /** Name in the RC export — renamed to 00000.png when RC undistorted it. */
+  name: string;
+  position: number[];
+  /** Row-major 3x3 rotation of the camera-to-world matrix. */
+  basis: number[];
+  /** The input frame this camera came from, when the two could be matched. */
+  source_name: string | null;
+  sequence_id: number | null;
+  /** An aligned camera whose neighbour in the input order never came back. */
+  gap_edge: boolean;
+}
+
+export interface CamerasReport {
+  available: boolean;
+  count: number;
+  cameras: CameraPose[];
+  matched_by?: 'name' | 'position' | 'count' | null;
+  gaps_known?: boolean;
+  missing_count?: number;
+  sequence_ids?: number[];
+  fov_x?: number | null;
+  aspect?: number | null;
 }

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useSettings } from '@/hooks/useSettings';
-import { PlyViewer } from '@/components/panels/PlyViewer';
+import SceneViewer from '@/components/viewer/SceneViewer';
 import type { ExportFile } from '@/types';
 
 function formatBytes(bytes: number): string {
@@ -175,13 +175,18 @@ const Step5_Export: React.FC = () => {
         </div>
       )}
 
-      {/* PLY viewer */}
+      {/* Exported splat */}
       {currentProjectId && (plyFile || isDone) && (
-        <div className="rounded-lg bg-slate-800 border border-slate-700 overflow-hidden">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide px-4 pt-3 pb-2">
-            PLY Viewer (SuperSplat)
+        <div className="rounded-lg bg-slate-800 border border-slate-700 p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Exported splat
           </p>
-          <PlyViewer projectId={currentProjectId} />
+          <SceneViewer
+            projectId={currentProjectId}
+            source="export"
+            refreshKey={status}
+            height={440}
+          />
         </div>
       )}
 

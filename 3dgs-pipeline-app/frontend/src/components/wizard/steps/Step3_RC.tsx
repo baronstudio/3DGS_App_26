@@ -7,6 +7,7 @@ import { usePipeline } from '@/hooks/usePipeline';
 import { useSettings } from '@/hooks/useSettings';
 import { useDefaults } from '@/hooks/useDefaults';
 import { ProgressBar } from '@/components/panels/ProgressBar';
+import SceneViewer from '@/components/viewer/SceneViewer';
 import RCSettings from '@/components/settings/RCSettings';
 import type { AlignmentReport, RCSettingsType } from '@/types';
 
@@ -223,6 +224,23 @@ const Step3_RC: React.FC = () => {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Sparse cloud + registered cameras. A bad alignment — a fold in the
+          camera path, a component sitting at another scale — is visible here
+          and nowhere in the numbers above. */}
+      {currentProjectId && !isRunning && (
+        <div className="rounded-lg bg-slate-800 border border-slate-700 p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Sparse cloud
+          </p>
+          <SceneViewer
+            projectId={currentProjectId}
+            source="rc"
+            refreshKey={status}
+            height={440}
+          />
         </div>
       )}
 

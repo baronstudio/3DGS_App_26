@@ -3,14 +3,6 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Info } from 'lucide-react';
 import { StubToggle } from './StubToggle';
@@ -21,6 +13,31 @@ interface LFSSettingsProps {
   settings: LFSSettingsType;
   onChange: (s: LFSSettingsType) => void;
 }
+
+// The strategies LichtFeld Studio v0.5.3 accepts on --strategy. "Default" sends
+// no flag at all and leaves the choice to the build, which currently means MRNF.
+const STRATEGIES: { value: LFSSettingsType['strategy']; label: string; hint: string }[] = [
+  {
+    value: 'default',
+    label: 'Default (build choice)',
+    hint: 'No --strategy flag — LichtFeld Studio v0.5.3 picks MRNF.',
+  },
+  {
+    value: 'mrnf',
+    label: 'MRNF',
+    hint: 'Multi-Resolution Neural Field refinement — the v0.5.3 default, pinned explicitly.',
+  },
+  {
+    value: 'mcmc',
+    label: 'MCMC',
+    hint: 'Markov Chain Monte Carlo — fixed Gaussian budget, slower.',
+  },
+  {
+    value: 'igs+',
+    label: 'IGS+',
+    hint: 'Improved Gaussian Splatting densification.',
+  },
+];
 
 const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
   const { updateSettings } = useSettings();
@@ -72,75 +89,24 @@ const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
           onValueChange={(v) => update('strategy', v as LFSSettingsType['strategy'])}
           className="flex flex-col gap-2"
         >
-          <div className="flex items-center gap-1.5">
-            <RadioGroupItem value="default" id="strategy-default" />
-            <Label htmlFor="strategy-default" className="text-slate-400 cursor-pointer">
-              Default
-            </Label>
-          </div>
-          <div className="flex items-center gap-2">
-            <RadioGroupItem value="mcmc" id="strategy-mcmc" />
-            <Label htmlFor="strategy-mcmc" className="text-slate-400 cursor-pointer">
-              MCMC
-            </Label>
-            <span
-              title="Markov Chain Monte Carlo — better quality, slower"
-              className="text-slate-500 hover:text-slate-300 cursor-help"
-            >
-              <Info className="h-3.5 w-3.5" />
-            </span>
-          </div>
+          {STRATEGIES.map(({ value, label, hint }) => (
+            <div key={value} className="flex items-center gap-2">
+              <RadioGroupItem value={value} id={`strategy-${value}`} />
+              <Label
+                htmlFor={`strategy-${value}`}
+                className="text-slate-400 cursor-pointer"
+              >
+                {label}
+              </Label>
+              <span
+                title={hint}
+                className="text-slate-500 hover:text-slate-300 cursor-help"
+              >
+                <Info className="h-3.5 w-3.5" />
+              </span>
+            </div>
+          ))}
         </RadioGroup>
-      </div>
-
-      <Separator className="bg-slate-700/50" />
-
-      {/* Learning rate */}
-      <div className="space-y-2">
-        <Label htmlFor="lfs-lr">Learning rate</Label>
-        <Input
-          id="lfs-lr"
-          type="number"
-          min={0.0001}
-          max={0.01}
-          step={0.0001}
-          value={settings.lr}
-          onChange={(e) => update('lr', Number(e.target.value))}
-        />
-      </div>
-
-      <Separator className="bg-slate-700/50" />
-
-      {/* Save interval */}
-      <div className="space-y-2">
-        <Label htmlFor="lfs-save-interval">Save interval</Label>
-        <Input
-          id="lfs-save-interval"
-          type="number"
-          min={0}
-          max={10000}
-          step={100}
-          value={settings.save_interval}
-          onChange={(e) => update('save_interval', Number(e.target.value))}
-        />
-        <p className="text-xs text-slate-500">0 = disabled</p>
-      </div>
-
-      <Separator className="bg-slate-700/50" />
-
-      {/* Render mode */}
-      <div className="space-y-2">
-        <Label>Render mode</Label>
-        <Select value={settings.render_mode} onValueChange={(v) => update('render_mode', v)}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select render mode" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="RGB">RGB</SelectItem>
-            <SelectItem value="RGB_D">RGB_D</SelectItem>
-            <SelectItem value="DEPTH">DEPTH</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
 
       <Separator className="bg-slate-700/50" />

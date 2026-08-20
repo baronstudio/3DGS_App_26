@@ -61,15 +61,20 @@ async def run_blender_real(project_path: Path, broadcast_fn, settings: dict) -> 
         stderr=asyncio.subprocess.STDOUT,
     )
 
-    async for raw in proc.stdout:
-        line = raw.decode("utf-8", errors="replace").strip()
-        await broadcast_fn("blender", "INFO", line)
-
     try:
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace").strip()
+            await broadcast_fn("blender", "INFO", line)
+
         await asyncio.wait_for(proc.wait(), timeout=1800)
     except asyncio.TimeoutError:
         proc.kill()
         raise RuntimeError("Blender timed out after 30 minutes")
+    except asyncio.CancelledError:
+        # An aborted step must not leave Blender running headless.
+        if proc.returncode is None:
+            proc.kill()
+        raise
 
     if proc.returncode != 0:
         raise RuntimeError(f"Blender exited with code {proc.returncode}")

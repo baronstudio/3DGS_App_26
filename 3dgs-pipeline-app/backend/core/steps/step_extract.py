@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.core.config import app_config
 from backend.core.defaults import ExtractDefaults, load_defaults, resolve_extract_fps
+from backend.core.proc import ProcessAborted, kill_tree, release, spawn
 from backend.core.probe import probe_video
 
 # Minimal valid 1×1 grey JPEG (JFIF)
@@ -141,36 +142,41 @@ async def run_extract_real(project_path: Path, broadcast_fn, settings: dict) -> 
 
     await broadcast_fn("extract", "INFO", f"[FFmpeg] Running: {' '.join(cmd)}")
 
-    # Use subprocess.Popen + run_in_executor instead of asyncio.create_subprocess_exec.
-    # On Windows, uvicorn may use a SelectorEventLoop which raises NotImplementedError
-    # for create_subprocess_exec. Popen + executor works with any event loop type.
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    # Registered so /control abort can kill it from the outside: the reader
+    # below blocks in the thread pool and never gets to poll a flag
+    # (see core/proc.py).
+    proc = spawn(cmd, project_path)
 
     frame_count = 0
     ffmpeg_output_lines: list[str] = []
 
     # Stream stdout line-by-line; each readline() blocks in the thread pool.
-    while True:
-        raw = await loop.run_in_executor(None, proc.stdout.readline)
-        if not raw:
-            break
-        line = raw.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
-        ffmpeg_output_lines.append(line)
-        m = re.search(r"frame=\s*(\d+)", line)
-        if m:
-            frame_count = int(m.group(1))
-            progress = (frame_count / max_frames) if max_frames > 0 else None
-            await broadcast_fn("extract", "INFO", line, progress=progress)
-        else:
-            await broadcast_fn("extract", "INFO", line)
+    try:
+        while True:
+            raw = await loop.run_in_executor(None, proc.stdout.readline)
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            ffmpeg_output_lines.append(line)
+            m = re.search(r"frame=\s*(\d+)", line)
+            if m:
+                frame_count = int(m.group(1))
+                progress = (frame_count / max_frames) if max_frames > 0 else None
+                await broadcast_fn("extract", "INFO", line, progress=progress)
+            else:
+                await broadcast_fn("extract", "INFO", line)
 
-    returncode = await loop.run_in_executor(None, proc.wait)
+        returncode = await loop.run_in_executor(None, proc.wait)
+    except asyncio.CancelledError:
+        kill_tree(proc)
+        raise
+    finally:
+        killed = release(project_path, proc)
+
+    if killed:
+        raise ProcessAborted("FFmpeg was stopped by the user.")
 
     if returncode != 0:
         tail = "\n".join(ffmpeg_output_lines[-20:]) if ffmpeg_output_lines else "(no output)"

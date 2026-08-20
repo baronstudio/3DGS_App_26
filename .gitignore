@@ -34,3 +34,6 @@ imgui.ini
 # Editor / local
 *.bak
 .claude/settings.local.json
+
+# Vite build output (npm run build) — artefact, like node_modules/
+3dgs-pipeline-app/frontend/dist/

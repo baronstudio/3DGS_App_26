@@ -10,6 +10,11 @@ from typing import Optional
 
 from backend.core.config import app_config
 from backend.core.defaults import RCDefaults, load_defaults
+from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.steps.rc_postprocess import (
+    align_pointcloud_to_cameras,
+    normalise_transforms,
+)
 
 _STUB_ASSETS = Path(__file__).parents[3] / "tools" / "test_assets"
 
@@ -446,27 +451,35 @@ async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     loop = asyncio.get_running_loop()
 
-    # Use subprocess.Popen + run_in_executor to avoid NotImplementedError
-    # on Windows when uvicorn runs with a SelectorEventLoop.
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    # Registered so /control abort can kill the tree from the outside — RC
+    # launches workers of its own, so only a tree kill frees the GPU (core/proc.py).
+    proc = spawn(cmd, project_path)
 
-    while True:
-        raw = await loop.run_in_executor(None, proc.stdout.readline)
-        if not raw:
-            break
-        line = raw.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
-        await broadcast_fn("rc", _classify_rc_line(line), line)
+    try:
+        while True:
+            raw = await loop.run_in_executor(None, proc.stdout.readline)
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            await broadcast_fn("rc", _classify_rc_line(line), line)
 
-    returncode = await loop.run_in_executor(None, proc.wait)
+        returncode = await loop.run_in_executor(None, proc.wait)
+    except asyncio.CancelledError:
+        kill_tree(proc)
+        raise
+    finally:
+        killed = release(project_path, proc)
+
+    if killed:
+        raise ProcessAborted("RealityScan was stopped by the user.")
 
     if returncode != 0:
         raise RuntimeError(f"RealityCapture exited with code {returncode}")
+
+    if rc.normalise_for_lfs:
+        await _normalise_export_for_lfs(rc_output, broadcast_fn)
 
     await broadcast_fn("rc", "INFO", "[RC] Alignment complete - checking coverage.")
     coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
@@ -475,6 +488,50 @@ async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
     tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
     await broadcast_fn("rc", "SUCCESS", f"[RC] Step complete{tail}.", progress=1.0)
     return {"rc_output": str(rc_output), "alignment": coverage}
+
+
+async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:
+    """Reconcile RC's two exporters with each other and with the LFS loader.
+
+    Only the real runner calls this: the stub does not emulate RC's exporters,
+    it writes the post-RC state directly, already in the shape LFS reads.
+
+    Never raises - a failed rewrite is worth a warning, not a dead alignment.
+    See rc_postprocess.py for what the two fixes are and why.
+    """
+    report: dict = {}
+    try:
+        report["transforms"] = normalise_transforms(rc_output)
+        if report["transforms"].get("patched"):
+            await broadcast_fn(
+                "rc", "INFO",
+                f"[RC] transforms.json normalised for LichtFeld Studio - "
+                f"{report['transforms']['camera_model']} intrinsics hoisted to the "
+                f"top level over {report['transforms']['frames']} frames.",
+            )
+        report["pointcloud"] = align_pointcloud_to_cameras(rc_output)
+        if report["pointcloud"].get("rotated"):
+            await broadcast_fn(
+                "rc", "INFO",
+                f"[RC] Sparse cloud rotated into the camera frame "
+                f"({report['pointcloud']['rotation']}, "
+                f"{report['pointcloud']['points']:,} points) - RC exports the "
+                f"cloud Z-up and the registration Y-up.",
+            )
+        elif report["pointcloud"].get("reason") not in (None, "already rotated"):
+            await broadcast_fn(
+                "rc", "WARNING",
+                f"[RC] Sparse cloud left in RC's frame: "
+                f"{report['pointcloud']['reason']}. It will not line up with the "
+                f"cameras in LichtFeld Studio.",
+            )
+    except Exception as exc:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RC] Could not normalise the export for LichtFeld Studio: {exc}",
+        )
+        report["error"] = str(exc)
+    return report
 
 
 def _classify_rc_line(line: str) -> str:

@@ -26,14 +26,12 @@
         "max_features": 60000,
         "keep_largest": true,
         "merge_components": true,
+        "normalise_for_lfs": true,
         "extra_align_commands": []
     },
     "lfs": {
         "iterations": 30000,
         "strategy": "default",
-        "lr": 0.001,
-        "save_interval": 0,
-        "render_mode": "RGB",
         "eval": false,
         "save_eval_images": false,
         "background_color": "#000000"
@@ -45,5 +43,12 @@
     "blender": {
         "scene_scale": 1.0,
         "import_mode": "splatforge"
+    },
+    "viewer": {
+        "preview_max_points": 1000000,
+        "point_size": 1.6,
+        "show_cameras": true,
+        "show_camera_path": true,
+        "background": "#0b1220"
     }
 }

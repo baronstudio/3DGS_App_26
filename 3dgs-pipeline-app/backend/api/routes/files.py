@@ -1,10 +1,11 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from backend.core import cameras, preview
 from backend.core.steps.step_analyze import read_json
 from backend.db.database import get_session
 from backend.models.project import Project
@@ -199,3 +200,80 @@ async def list_export_files(project_id: str, session: Session = Depends(get_sess
         if f.is_file()
     ]
     return {"files": files}
+
+
+# ── 3D viewer ────────────────────────────────────────────────────────────────
+
+def _preview_query(source: str, max_count: int) -> tuple[str, Optional[int]]:
+    if source not in preview.SOURCE_DIRS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown source '{source}'. Expected one of "
+                   f"{', '.join(preview.SOURCE_DIRS)}.",
+        )
+    # 0 means "the whole file" — the viewer's "full quality" level.
+    return source, (None if max_count <= 0 else max_count)
+
+
+@router.get("/{project_id}/preview")
+async def preview_status(
+    project_id: str,
+    source: str = "rc",
+    max_count: int = 1_000_000,
+    session: Session = Depends(get_session),
+):
+    """State of one viewer preview: what the step produced and what is cached.
+
+    Cheap enough to poll — it reads the PLY header, never the body, so it costs
+    the same in front of a 1.24 GB splat as in front of the stub's 500 points.
+    """
+    slug = get_slug_from_id(project_id, session)
+    source, max_count = _preview_query(source, max_count)
+    project_path = PROJECTS_DIR / slug
+
+    state = preview.status(project_path, slug, source, max_count)
+    job = preview.builds.get(slug, source, max_count)
+    if job and not job["task"].done():
+        state["building"] = True
+        state["progress"] = job["progress"]
+    elif job and job["error"] and not state.get("ready"):
+        state["error"] = job["error"]
+    return state
+
+
+@router.post("/{project_id}/preview")
+async def preview_build(
+    project_id: str,
+    source: str = "rc",
+    max_count: int = 1_000_000,
+    session: Session = Depends(get_session),
+):
+    """Start building a preview and return immediately.
+
+    Converting five million gaussians is seconds, not milliseconds, and the
+    caller is a viewer that would rather draw a progress bar than hold a
+    request open. Calling this twice for the same level joins the first build.
+    """
+    slug = get_slug_from_id(project_id, session)
+    source, max_count = _preview_query(source, max_count)
+    project_path = PROJECTS_DIR / slug
+
+    state = preview.status(project_path, slug, source, max_count)
+    if not state.get("available"):
+        raise HTTPException(status_code=404, detail=f"No {source} output to preview yet.")
+    if state.get("ready"):
+        return state
+
+    job = preview.builds.start(project_path, slug, source, max_count)
+    return {**state, "building": True, "progress": job["progress"]}
+
+
+@router.get("/{project_id}/cameras")
+async def read_cameras(project_id: str, session: Session = Depends(get_session)):
+    """Camera poses of the last alignment, for the step 3 overlay.
+
+    200 with `available: false` before the first alignment — the overlay is a
+    layer of the viewer, not a reason to fail the request.
+    """
+    slug = get_slug_from_id(project_id, session)
+    return cameras.read_cameras(PROJECTS_DIR / slug)

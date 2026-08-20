@@ -28,7 +28,10 @@ See §6 and the decisions log (§12).
   Studio and Blender — local Windows binaries needing a local GPU. The FrameGate
   "VPS-ready" requirement is dropped. Only hygiene kept: no hardcoded `localhost`
   in the frontend API client.
-- No 3D viewer beyond the existing PLY preview.
+- ~~No 3D viewer beyond the existing PLY preview.~~ **Superseded 2026-08-20**
+  (§7.3): the "existing preview" was an iframe onto the *public* SuperSplat
+  editor, which cannot reach a local file. Steps 3, 4 and 5 now render in-app.
+  Still a non-goal: an *editor*. The viewer looks, it never writes.
 
 ---
 
@@ -77,7 +80,7 @@ Three distinct things, three homes. Do not merge them.
 | Layer | File / store | Contents | UI |
 |---|---|---|---|
 | **Installation** | `config.json` | `.exe` paths, URLs, stub flags | Setup panel → "Tools & stubs" |
-| **Defaults** | `defaults.json` | Business defaults per wizard step (fps policy, curation thresholds, RC precision, LFS iterations…) + capture presets | Setup panel → one section per step |
+| **Defaults** | `defaults.json` | Business defaults per wizard step (fps policy, curation thresholds, RC precision, LFS iterations…) + capture presets + the 3D viewer (§7.3) | Setup panel → one section per step |
 | **Per project** | `Project.settings_json` (SQLite) | What the user changed for THIS project | Wizard step "Advanced" panels |
 
 **Precedence: per-project > defaults > code fallback.** A project stores only the
@@ -104,6 +107,7 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
 │   ├── core/probe.py           # ffprobe wrapper (pure)
 │   ├── core/pipeline_runner.py # orchestrator, abort/pause
 │   ├── core/steps/             # step_extract, step_rc, step_lfs, step_export, step_blender
+│   │                          #   + rc_postprocess (RC export → LFS, §7.2)
 │   └── core/curate/            # sharpness, scenes, overlap, select  (pure, no FastAPI)
 ├── frontend/src/…
 └── projects/<slug>/            # ⚠ user data — never auto-deleted
@@ -114,7 +118,9 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
     ├── rc_output/              # transforms.json, pointcloud.ply,
     │                          #   align.rscmd + alignment_check.json (§7.1)
     ├── lfs_output/
-    └── export/
+    ├── export/
+    └── preview/                # ⚙ generated: browser-sized copies for the 3D
+                               #   viewer (§7.3). Cache, safe to delete.
 ```
 
 **Why per-frame data is JSON and not SQL:** a single project produces thousands of
@@ -249,6 +255,70 @@ not block the pipeline, and the call to re-align is the user's.
 
 ---
 
+### 7.2 What step 3 hands to step 4
+
+RealityScan's two exporters do not agree with each other, and neither writes
+quite what the LichtFeld Studio Blender/NeRF loader reads. Step 3 rewrites both
+files in place after the alignment (`rc_postprocess.py`, gated on
+`rc.normalise_for_lfs`):
+
+| What RC writes | What LFS needs | Fix |
+|---|---|---|
+| `camera_model: SIMPLE_RADIAL`, `fl_x`/`cx`/`cy`/`w`/`h` **inside each frame** (its undistortion crops every image differently) | the model and the intrinsics at the **top level** | hoist the medians, name the model `PINHOLE` (`OPENCV` if any `k`/`p` is non-zero); the per-frame values stay |
+| absolute `G:\…` image paths | anything resolvable | rewrite relative to `rc_output/` |
+| `pointcloud.ply` in RC's own **Z-up** frame, `transforms.json` in NeRF **Y-up** | one frame | rotate the cloud `Rx+90`, `(x, y, z) -> (x, -z, y)`, stamped in the PLY header so a re-run is a no-op |
+
+Without the first fix LFS logs `No camera intrinsics found, assuming
+equirectangular`, then `Use --gut or --undistort to train on cameras with
+non-pinhole model` — and exits 0. Without the third the sparse cloud lands 90°
+off around X from the cameras that produced it: a scene standing upright next
+to a flat camera path in the LFS viewer, and Gaussians initialised in the wrong
+frame.
+
+The stub is exempt: it emulates RC's *result*, not RC's exporters, and already
+writes the post-RC shape.
+
+
+### 7.3 The 3D viewer (steps 3, 4 and 5)
+
+Step 3 shows the sparse cloud, step 4 the trained splat, step 5 the exported
+one. It is the only place several failures are visible at all: an alignment
+that folded the camera path on itself, a component sitting at another scale, a
+training that converged onto something other than the scene you shot.
+
+**Nothing loads the step output directly.** Measured on a real project,
+`rc_output/pointcloud.ply` is 142 MB of *ASCII* (2.1 M points) and
+`lfs_output/splat_9000.ply` is **1.24 GB** — 5 M gaussians with the 45 SH
+coefficients a preview never uses. `core/ply.py` streams the source and writes
+a decimated binary copy into `projects/<slug>/preview/`, served by the existing
+`/static` mount:
+
+| Source kind | Preview | Record | Renderer |
+|---|---|---|---|
+| gaussians (`f_dc_*`, `opacity`, `scale_*`, `rot_*`) | `.splat` | 32 B — pos, exp(scale), SH-DC colour × sigmoid(opacity), quantised quaternion | `@mkkellogg/gaussian-splats-3d`, sorted and alpha-blended |
+| plain cloud | `.pc3d` (ours) | 16 B — 3 float32 + rgba | `THREE.Points` |
+
+Three consequences worth keeping:
+
+- **The renderer is chosen from what the file *is*, not from which step asked.**
+  The RC *stub* writes a gaussian PLY as `rc_output/pointcloud.ply`, so keying
+  the viewer on the step number shows the wrong renderer in stub mode.
+- **Decimation is a uniform spread, never a head slice.** A PLY is not
+  shuffled; the first million points of an RC cloud are one corner of the scene.
+  The level is a UI control (`viewer.preview_max_points`, default 1 M) and
+  "Full" always loads the whole file — 5 M gaussians convert in ~1.7 s, so
+  capping was never about the conversion cost, only about the download.
+- **The preview is rebuilt when its source is rewritten**, tracked by mtime and
+  size in a sidecar `.json`, never by age. `preview/` is a cache: deleting it
+  costs one rebuild.
+
+The camera overlay reads `rc_output/transforms.json` — camera-to-world in the
+OpenGL frame, which is three.js's frame, so the matrices go in untouched.
+Frustums are coloured per sequence and the path breaks at each cut. The frames
+RC dropped cannot be drawn (they are absent from the export *because* they have
+no pose); what is drawn instead is the amber edge of each hole, the bridge
+frames of §7.1.
+
 ## 8. API
 
 ```
@@ -270,6 +340,9 @@ GET    /api/files/{project}/frames     frame list + curation verdicts
 GET    /api/files/{project}/analysis   scores.json + selection.json + overrides
 GET    /api/files/{project}/probe      ffprobe metadata of the source video
 GET    /api/files/{project}/alignment  RC coverage report (alignment_check.json)
+GET    /api/files/{project}/preview    3D preview state (?source=rc|lfs|export&max_count=)
+POST   /api/files/{project}/preview    build that preview — returns at once, poll the GET
+GET    /api/files/{project}/cameras    camera poses of the last alignment, for the overlay
 WS     /ws/logs                        progress, logs, metrics
 GET    /static/<slug>/...              project files (thumbnails, exports)
 ```
@@ -300,6 +373,8 @@ LichtFeld Studio and Blender are invoked as **subprocesses**, never linked.
 | FFmpeg (system exe) | LGPL-2.1+ (GPL if built with x264) | ✅ ok as subprocess — re-audit before any distribution |
 | RealityScan / LichtFeld Studio / Blender | proprietary / GPL, external | ✅ subprocess only, never bundled |
 | React / Vite / Tailwind / shadcn/ui / Zustand / recharts | MIT | ✅ ok |
+| three.js (`three`, `@types/three`) | MIT | ✅ ok — added for the 3D viewer (§7.3) |
+| `@mkkellogg/gaussian-splats-3d` | MIT | ✅ ok — added for the 3D viewer; the sorted splat rasteriser (§7.3) |
 | SAM 2 + checkpoints, PyTorch | Apache-2.0 / BSD-3 | ⚠ only if the mask module is ever revived |
 
 Any new dependency → add a row here in the same commit.
@@ -344,8 +419,16 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-20 | **The `.rscmd` is generated per run from the settings**, not shipped as a static file. `-mergeComponents` is absent from some RealityScan builds and an unknown verb makes RC exit non-zero, so the merge has to be switchable from the UI; `rc.extra_align_commands` is the escape hatch for verbs the app does not model. |
 | 2026-08-20 | **The coverage check matches cameras by name, then by position.** `-exportRegistration` to a NeRF `transforms.json` does not keep the input filenames: RC writes undistorted copies renamed `00000.png`, `00001.png`… so a fully aligned project matched zero names and was reported as `0/300 · 0%`. When *no* name matches at all, the export was renamed rather than emptied — fall back to export order, which is the sorted input order. A renamed *and* short export reports the count only (`matched_by: "count"`), since which frames were dropped is genuinely unreadable from it. |
 | 2026-08-20 | **`asyncio.CancelledError` is caught by name in the runner.** `/control abort` cancels the task outright, and `CancelledError` derives from `BaseException` — an `except Exception` never saw it, so an aborted step stayed "running" in the UI until a page reload. `StepStatus` gains `aborted`. |
+| 2026-08-20 | **Step 3 rewrites RC's export before step 4 reads it (§7.2).** RC's two exporters disagree with each other and with the LFS loader: `-exportRegistration` writes `camera_model: SIMPLE_RADIAL` with the intrinsics *inside each frame*, and `-exportSparsePointCloud` writes the cloud in RC's own Z-up frame while the registration is NeRF Y-up. LFS v0.5.3 then falls back to *equirectangular*, refuses to train — **and still exits 0**, so the step reported success over an empty `lfs_output/`. `rc_postprocess.py` hoists median PINHOLE intrinsics to the top level, relativises the image paths, and rotates the cloud by `Rx+90`, `(x, y, z) -> (x, -z, y)`. Switchable via `rc.normalise_for_lfs`; the stub is exempt because it writes the post-RC state directly, not RC's exporters. |
+| 2026-08-20 | **A zero exit code from LichtFeld Studio is not success.** v0.5.3 catches its own training exceptions, logs `Training error: …` and exits 0. `step_lfs.py` now fails on that line *and* on an output directory with no `.ply`/`.splat` in it. The `cudaEventDestroy failed: driver shutting down` storm that follows every exit is CUDA teardown noise and is explicitly **not** treated as fatal — it is the visible symptom, never the cause. |
+| 2026-08-20 | **The LFS CLI is read from the installed build, not remembered.** v0.5.3 renamed the strategies (`mcmc`, `mrnf`, `igs+`, default MRNF), prints progress as a `
+`-redrawn bar rather than `iter n/N`, and colours everything with ANSI SGR codes. The runner splits on CR as well as LF, strips the escapes, and maps `[error]`/`[warn]` onto LiveLog levels. `lr`, `save_interval` and `render_mode` were **removed** from `LFSDefaults`, `defaults.json` and both settings panels: v0.5.3 has no CLI verb for any of them, so the controls round-tripped through `Project.settings_json` and were then silently dropped by the command builder. Upstream they live in `eval/*_optimization_params.json` (`means_lr`, `shs_lr`, `opacity_lr`, `scaling_lr`, `rotation_lr`, `save_steps` as a *list of steps*, not an interval) and are reachable only through `--config <file.json>`; `render_mode` is a rasteriser/viewer concern with no training meaning. Writing that config file is a feature, not a field — if it lands, it lands as its own panel. |
 | 2026-08-20 | **Build artefacts and vendored binaries are untracked.** `node_modules/`, `.venv/`, `__pycache__/` and `tools/` were committed by the initial import — 27 393 tracked files, of which 27 096 were artefacts, so every commit carried Vite-cache and `.pyc` churn. They are now gitignored and removed from the index (files kept on disk). Two exceptions stay tracked: `tools/test_assets/` (read by `rc_stub` / `lfs_stub` — stub mode must survive a fresh clone, core principle #2) and the `tools/supersplat` gitlink. **A fresh clone therefore has no `tools/ffmpeg/` and no `tools/lichtfeld-studio-bin/`**: `setup.py` clones LichtFeld Studio from source and auto-detects FFmpeg on `PATH`, and the prebuilt binaries are re-downloaded by hand. That is the cost of not pushing ~1 GB of `.exe` to GitHub — where `slang-llvm.dll` (105 MB) would be rejected outright. |
 
+| 2026-08-20 | **Abort kills the tool's process tree; Pause is gone from the exe-driven steps.** `/control abort` cancelled the asyncio task, but every exe step streams stdout from a thread-pool `readline()` and held its `Popen` in a local: the cancellation unwound the coroutine and marked the step aborted while `LichtFeld-Studio.exe` kept training on the GPU, unreferenced, with the reader thread stuck on a pipe that never closed. `core/proc.py` registers every child by project directory and `request_abort` `taskkill /F /T`s the tree — RC and LFS spawn workers, so killing the parent alone orphans the process that actually holds the GPU. Killing it is also what closes the pipe and unblocks the reader. A child killed that way raises `ProcessAborted`, handled like `AnalysisAborted` so the step is `aborted`, not `error`. **Pause was pure theatre** — the event is only awaited between steps and `/start` runs one step per call, so no running step ever observed it; none of FFmpeg, RealityScan or LichtFeld Studio has a pause verb anyway. The button is removed from step 4 rather than left lying; reviving it means suspending the child process (`NtSuspendProcess`) or threading the event into the curation loops, which is a feature, not a wiring fix. |
+| 2026-08-20 | **The 3D viewer is in-app (three.js), and it never loads the step output (§7.3).** The SuperSplat route was dropped: `supersplat_url` points at the *public* editor, `https://superspl.at/editor`, which cannot reach a `localhost` static file — the iframe was not merely untested, it could not work. Against that, the §1 non-goal *"no 3D viewer beyond the existing PLY preview"* buys nothing, since the existing preview was the broken iframe. Two MIT dependencies, both in §10: `three` for the sparse cloud, `@mkkellogg/gaussian-splats-3d` for depth-sorted gaussians — a splat drawn as coloured points is a different picture, not a cheaper one. The size problem is solved in the backend, not the browser: 1.24 GB and 142 MB of ASCII are converted to a 32-byte `.splat` / 16-byte `PC3D` record and decimated by a uniform spread, cached under `projects/<slug>/preview/` and invalidated by source mtime. |
+| 2026-08-20 | **The preview build is a POST that returns immediately, polled through the GET.** Converting five million gaussians is seconds, not milliseconds, and a request held open for the length of it is indistinguishable from a hung app. It is deliberately outside `pipeline_runner`: nothing it runs is an external tool, there is no process to kill, and cancelling it would only leave a `.part` file behind. |
+| 2026-08-20 | **`.splat` and `.pc3d` are registered as `application/octet-stream`.** `StaticFiles` serves unknown extensions as `text/plain; charset=utf-8`, which invites anything in the path to treat a binary splat as text. |
 Any new structural decision → add a row here in the same commit.
 
 ---

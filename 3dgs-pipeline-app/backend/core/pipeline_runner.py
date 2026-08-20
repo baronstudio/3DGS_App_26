@@ -15,9 +15,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from backend.api.websocket import broadcast
+from backend.core.proc import ProcessAborted, kill_project_children
 from backend.core.steps.step_analyze import (
     AnalysisAborted,
     resolve_curate_settings,
@@ -124,16 +125,39 @@ async def _broadcast_best_effort(*args, **kwargs) -> None:
 
 
 def request_abort(project_id: str) -> None:
-    """Signal the running pipeline for this project to abort."""
+    """Signal the running pipeline for this project to abort — and kill its tools.
+
+    Cancelling the task is not enough. A step driving an .exe spends the whole
+    run parked in a thread-pool `readline()`, so the cancellation unwinds the
+    coroutine while the child keeps going: an aborted training used to leave
+    LichtFeld-Studio.exe on the GPU with no reference left to stop it. Kill the
+    process tree first, then let the cancellation do the bookkeeping — killing it
+    also closes the pipe, which is what unblocks the reader thread.
+    """
     _abort_flags[project_id] = True
     # Unblock any paused coroutine so it can observe the abort flag.
     event = _pause_events.get(project_id)
     if event:
         event.set()
 
+    project = _get_project(project_id)
+    if project:
+        killed = kill_project_children(PROJECTS_DIR / project.slug)
+        if killed:
+            _debug(f"  → abort: killed {killed} running tool process tree(s)")
+
 
 def request_pause(project_id: str) -> None:
-    """Pause the pipeline after the current sub-operation completes."""
+    """Hold the pipeline at the next inter-step gate.
+
+    Scope, so nobody wires a button to this expecting more: the event is awaited
+    between steps only, and `/start` runs exactly one step per call — so no
+    running step observes it today. None of the tools we drive (FFmpeg,
+    RealityScan, LichtFeld Studio) has a pause verb, and the LFS step's Pause
+    button was removed rather than left lying about what it did. Reviving pause
+    means suspending the child process (`NtSuspendProcess` / `psutil.suspend`)
+    or threading the event into the curation loops — a feature, not a wiring fix.
+    """
     event = _pause_events.get(project_id)
     if event:
         event.clear()
@@ -166,6 +190,71 @@ def _update_project(project_id: str, **kwargs) -> None:
         project.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         session.add(project)
         session.commit()
+
+
+def _demote_if_still_running(project_id: str, reason: str) -> None:
+    """Last-resort cleanup: no step may outlive the task that runs it.
+
+    The named handlers above cover the failures we know about, but a step left
+    on "running" is not a cosmetic glitch — it disables the step's start button
+    for good (see reconcile_orphaned_steps). Run from `finally`, so whatever way
+    the task leaves — including a BaseException no `except` clause names — the
+    UI gets a state it can act on.
+    """
+    project = _get_project(project_id)
+    if not project:
+        return
+    status = project.get_step_status()
+    stale = [k for k, v in status.items() if v == "running"]
+    if not stale:
+        return
+    for key in stale:
+        status[key] = "error"
+    _debug(f"  → cleanup: steps {sorted(stale)} left on 'running' — demoted to 'error' ({reason})")
+    _update_project(
+        project_id,
+        error_message=f"[Interrupted] Step {', '.join(sorted(stale))} stopped unexpectedly ({reason}).",
+        _step_status_dict=status,
+    )
+
+
+def reconcile_orphaned_steps() -> int:
+    """Demote every step still persisted as "running" at process start.
+
+    `step_status` is the only thing the wizard hydrates from, and nothing but a
+    live run ever moves a step off "running". A backend killed or reloaded mid
+    step therefore leaves that state in the DB forever: `Step*` components
+    disable their start button on `status === 'running'`, and the Abort button
+    only renders while `pipelineRunning` is true — which a fresh page load never
+    is. The step becomes a dead end reachable only by editing the DB by hand.
+
+    Nothing survives a restart, so any "running" found here is by definition
+    stale. Demote it to "error" with a message that says what happened, rather
+    than to "pending", which would claim the step was never attempted.
+    """
+    swept = 0
+    with Session(engine) as session:
+        for project in session.exec(select(Project)).all():
+            status = project.get_step_status()
+            stale = [k for k, v in status.items() if v == "running"]
+            if not stale:
+                continue
+            for key in stale:
+                status[key] = "error"
+            project.set_step_status(status)
+            project.error_message = (
+                f"[Interrupted] Step {', '.join(sorted(stale))} was still running when the"
+                " backend stopped. Restart the step."
+            )
+            session.add(project)
+            swept += 1
+            _debug(
+                f"  → startup sweep: project {project.id} ({project.name}) —"
+                f" steps {sorted(stale)} were stale 'running', demoted to 'error'"
+            )
+        if swept:
+            session.commit()
+    return swept
 
 
 # ── Main orchestrator ────────────────────────────────────────────────────────
@@ -288,12 +377,14 @@ async def run_pipeline(
                     f" Frontend must wait for user click to advance wizard."
                 )
 
-            except (AnalysisAborted, asyncio.CancelledError) as exc:
+            except (AnalysisAborted, ProcessAborted, asyncio.CancelledError) as exc:
                 # A user abort is not a failure — do not poison the project with
                 # an error_message the user then has to clear by hand. Naming
                 # CancelledError matters: /control cancels the task outright, and
                 # that derives from BaseException, so without this the step
-                # stayed "running" in the UI until a page reload.
+                # stayed "running" in the UI until a page reload. ProcessAborted
+                # covers the other order: the tool was killed and its non-zero
+                # exit came back before the cancellation did.
                 _debug(f"  → Step {step} ({step_name.upper()}) — ABORTED by user")
                 step_status[str(step)] = "aborted"
                 _update_project(project_id, _step_status_dict=step_status)
@@ -337,6 +428,7 @@ async def run_pipeline(
         _debug(f"  → run_pipeline cleanup for project {project_id}")
         _abort_flags.pop(project_id, None)
         _pause_events.pop(project_id, None)
+        _demote_if_still_running(project_id, "runner exited")
 
 
 # ── Standalone re-analysis ───────────────────────────────────────────────────
@@ -403,3 +495,4 @@ async def run_analysis_only(project_id: str, settings: dict = {}) -> None:
     finally:
         _abort_flags.pop(project_id, None)
         _pause_events.pop(project_id, None)
+        _demote_if_still_running(project_id, "analysis exited")

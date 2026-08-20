@@ -1,4 +1,5 @@
 import asyncio
+import mimetypes
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api import websocket
 from backend.api.routes import defaults, files, pipeline, projects, settings
+from backend.core.pipeline_runner import reconcile_orphaned_steps
 from backend.db.database import create_db_and_tables
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
@@ -24,6 +26,11 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
+    # Nothing survives a restart: a step still persisted as "running" belongs to
+    # a run this process never started, and it would freeze that step's button.
+    swept = reconcile_orphaned_steps()
+    if swept:
+        print(f"[startup] reconciled {swept} project(s) with a stale 'running' step", flush=True)
     yield
 
 
@@ -43,6 +50,12 @@ app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(defaults.router, prefix="/api/defaults", tags=["defaults"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
 app.include_router(websocket.router)
+
+# The viewer previews are binary; unknown extensions are served as text/plain,
+# which invites any proxy in the way to treat them as text and re-encode them.
+mimetypes.add_type("application/octet-stream", ".splat")
+mimetypes.add_type("application/octet-stream", ".pc3d")
+mimetypes.add_type("application/octet-stream", ".ply")
 
 app.mount("/static", StaticFiles(directory=str(PROJECTS_DIR)), name="static")
 

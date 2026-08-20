@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, AlertTriangle, Play, Pause, Square, CheckCircle } from 'lucide-react';
+import { Settings, AlertTriangle, Square, CheckCircle } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -13,15 +13,13 @@ import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useSettings } from '@/hooks/useSettings';
 import { ProgressBar } from '@/components/panels/ProgressBar';
+import SceneViewer from '@/components/viewer/SceneViewer';
 import LFSSettings from '@/components/settings/LFSSettings';
 import type { LFSSettingsType } from '@/types';
 
 const DEFAULT_LFS: LFSSettingsType = {
   iterations: 30000,
   strategy: 'default',
-  lr: 0.001,
-  save_interval: 0,
-  render_mode: 'RGB',
   eval: false,
   save_eval_images: false,
   background_color: '#000000',
@@ -35,7 +33,6 @@ const Step4_LFS: React.FC = () => {
   const { startPipeline, controlPipeline } = usePipeline();
   const { settings } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
-  const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lfsSettings, setLfsSettings] = useState<LFSSettingsType>(DEFAULT_LFS);
 
@@ -50,23 +47,29 @@ const Step4_LFS: React.FC = () => {
   const handleStart = async () => {
     if (!currentProjectId) return;
     setError(null);
-    setPaused(false);
     try {
-      await startPipeline(currentProjectId, 4, {});
+      // The Advanced panel is the per-project override layer (CLAUDE.md §4);
+      // sending {} here made every knob in it decorative. stub_enabled and
+      // stub_duration belong to config.json and are written by the panel itself.
+      const { iterations, strategy, eval: evalMode,
+        save_eval_images, background_color } = lfsSettings;
+      await startPipeline(currentProjectId, 4, {
+        lfs: { iterations, strategy, eval: evalMode, save_eval_images, background_color },
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to start training';
       setError(msg);
     }
   };
 
-  const handleControl = async (action: 'pause' | 'resume' | 'abort') => {
+  // Abort only: LichtFeld Studio has no pause verb, and a Pause button that
+  // cannot stop the training is worse than no button at all.
+  const handleAbort = async () => {
     if (!currentProjectId) return;
     try {
-      await controlPipeline(currentProjectId, action);
-      if (action === 'pause') setPaused(true);
-      if (action === 'resume') setPaused(false);
+      await controlPipeline(currentProjectId, 'abort');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : `Failed to ${action}`;
+      const msg = err instanceof Error ? err.message : 'Failed to abort';
       setError(msg);
     }
   };
@@ -181,39 +184,37 @@ const Step4_LFS: React.FC = () => {
         </div>
       )}
 
-      {/* Control buttons */}
+      {/* Control buttons — abort only, see handleAbort */}
       {isRunning && pipelineRunning && currentProjectId && (
-        <div className="flex gap-2">
-          {!paused ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleControl('pause')}
-              className="gap-1 border-slate-600 text-slate-300 hover:text-slate-100"
-            >
-              <Pause className="w-4 h-4" />
-              Pause
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleControl('resume')}
-              className="gap-1 border-slate-600 text-slate-300 hover:text-slate-100"
-            >
-              <Play className="w-4 h-4" />
-              Resume
-            </Button>
-          )}
+        <div className="flex items-center gap-3">
           <Button
             variant="destructive"
             size="sm"
-            onClick={() => handleControl('abort')}
+            onClick={handleAbort}
             className="gap-1"
           >
             <Square className="w-4 h-4" />
             Abort
           </Button>
+          <span className="text-xs text-slate-500">
+            Kills LichtFeld Studio and frees the GPU. Training cannot be paused.
+          </span>
+        </div>
+      )}
+
+      {/* The trained splat. Loss and PSNR say the optimiser converged; only
+          this says it converged onto the scene you shot. */}
+      {currentProjectId && !isRunning && (
+        <div className="rounded-lg bg-slate-800 border border-slate-700 p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Trained splat
+          </p>
+          <SceneViewer
+            projectId={currentProjectId}
+            source="lfs"
+            refreshKey={status}
+            height={440}
+          />
         </div>
       )}
 

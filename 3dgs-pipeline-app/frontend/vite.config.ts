@@ -31,6 +31,10 @@ export default defineConfig({
       '@radix-ui/react-slider',
       '@radix-ui/react-switch',
       '@radix-ui/react-slot',
+      // Same reason: the 3D viewer is only reachable through wizard steps 3-5.
+      'three',
+      'three/examples/jsm/controls/OrbitControls.js',
+      '@mkkellogg/gaussian-splats-3d',
     ],
   },
   server: {

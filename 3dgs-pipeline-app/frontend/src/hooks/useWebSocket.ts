@@ -41,19 +41,6 @@ export const useWebSocket = () => {
         const msg = JSON.parse(event.data as string) as WsMessage;
         setLastMessage(msg);
 
-        // ── Debug: log every raw WS message to console AND LiveLog ──────
-        console.debug('[WS-RAW]', msg);
-        usePipelineStore.getState().addLog({
-          id: `ws-raw-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          timestamp: msg.timestamp ?? new Date().toISOString(),
-          step: msg.step ?? 'ws',
-          level: 'DEBUG',
-          message: `[WS-RAW] type=${msg.type} step=${msg.step} level=${msg.level ?? '-'}`
-            + (msg.progress !== undefined ? ` progress=${msg.progress}` : '')
-            + (msg.status !== undefined ? ` status=${(msg as WsMessage & { status?: string }).status}` : '')
-            + (msg.message ? ` | ${msg.message}` : ''),
-        });
-
         usePipelineStore.getState().handleWsMessage(msg);
 
         // After a step finishes (success or error), persist step_status + current_step to the backend

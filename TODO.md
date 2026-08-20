@@ -55,32 +55,38 @@ already writes it), or drop it once COLMAP works? Default: keep both.
 
 ---
 
-## P2 — 3D preview of the sparse cloud at the end of step 3
+## ~~P2 — 3D preview of the sparse cloud at the end of step 3~~ — DONE 2026-08-20
 
-**Goal:** see `rc_output/pointcloud.ply` in the step 3 page once alignment is
-done, so a bad alignment is visible before spending an hour in LFS training.
+Shipped wider than scoped: steps 3, 4 and 5 all render in-app. See CLAUDE.md
+§7.3 and the decisions log.
 
-`PlyViewer` already exists (`components/panels/PlyViewer.tsx`) and is used by
-step 5 — but it is an **iframe onto SuperSplat**, a gaussian-splat editor.
-Whether it renders a plain RC sparse point cloud acceptably is untested, and
-that is the first thing to check, because it decides the whole item:
+What the investigation actually found:
 
-- **If SuperSplat handles it** → this is ~10 lines: mount `<PlyViewer>` in
-  `Step3_RC.tsx` with `plyUrl={/static/<slug>/rc_output/pointcloud.ply}` behind
-  the same `isDone` guard as the coverage panel. Note that `PlyViewer` currently
-  auto-resolves its URL from `exportFiles` (step 5 state) — pass the prop
-  explicitly so step 3 never shows step 5's file.
-- **If it does not** → an in-app viewer means three.js + `PLYLoader`, i.e. a real
-  dependency. That needs a licence-table row (§10, three.js is MIT) and a
-  justification, and it collides with the §1 non-goal *"no 3D viewer beyond the
-  existing PLY preview"* — so it is JB's call, not a silent addition.
+- **The SuperSplat route was not merely untested, it could not work.**
+  `config.json` sets `supersplat_url` to the *public* editor
+  (`https://superspl.at/editor`), which cannot reach a `localhost` static file.
+- **Neither output is loadable by a browser as it stands.** Measured on
+  `coutryside_001`: `rc_output/pointcloud.ply` is 142 MB of ASCII (2.1 M points),
+  `lfs_output/splat_9000.ply` is 1.24 GB (5 M gaussians, SH degree 3). So the
+  decision was never "three.js or iframe" but "where does the file get made
+  small" — and the answer is the backend (`core/ply.py`, ~1.7 s for the whole
+  1.24 GB).
+- **The RC *stub* writes a gaussian PLY as `rc_output/pointcloud.ply`**, so the
+  renderer is chosen from the file's own properties, not from the step number.
 
-**Nice to have once it renders:** colour the cameras of a split component
-differently, using `alignment_check.json`. That turns the coverage warning into
-something you can actually see.
+Delivered: `core/ply.py`, `core/preview.py`, `core/cameras.py`, the three
+`/api/files/{id}/{preview,cameras}` routes, `components/viewer/*`, a `viewer`
+section in `defaults.json` and the setup panel. `PlyViewer.tsx` is deleted.
 
-**Acceptance:** step 3 shows the cloud after a successful run; no viewer is
-mounted before the file exists; step 5's viewer is unaffected.
+Still open, deliberately:
+
+- **Live preview during training.** LFS writes `checkpoints/checkpoint.resume`
+  (2 GB) rather than intermediate splats, so there is nothing to show mid-run
+  without a `--config` save schedule (see the LFS row in the decisions log).
+- **Colouring cameras by component.** `alignment_check.json` names the frames
+  that never came back, and they have no pose — the viewer marks the amber
+  *edges* of each hole instead. Actual per-component colouring needs RC to
+  export more than the maximal component.
 
 ---
 
