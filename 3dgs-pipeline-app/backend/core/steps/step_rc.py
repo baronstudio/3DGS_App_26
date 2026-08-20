@@ -6,10 +6,311 @@ import random
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from backend.core.config import app_config
+from backend.core.defaults import RCDefaults, load_defaults
 
 _STUB_ASSETS = Path(__file__).parents[3] / "tools" / "test_assets"
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
+# -- Settings resolution -----------------------------------------------------
+
+def resolve_rc_settings(settings: dict) -> RCDefaults:
+    """Overlay the per-project settings onto the app defaults (CLAUDE.md 4).
+
+    A project may send the rc block nested or flat; both are accepted, and only
+    keys the model knows are taken - a stray UI field must not reach the .rscmd.
+    """
+    base = load_defaults().rc.model_dump()
+    incoming = settings or {}
+    nested = incoming.get("rc")
+    patch_source = nested if isinstance(nested, dict) else incoming
+    patch = {k: v for k, v in patch_source.items() if k in base and v is not None}
+    return RCDefaults.model_validate({**base, **patch})
+
+
+# -- Generated .rscmd --------------------------------------------------------
+
+def build_rscmd(frames_dir: Path, rc_output: Path, rc: RCDefaults) -> Path:
+    """Write the script RealityScan executes and return its path.
+
+    Generated per run instead of shipped as a static file: `-mergeComponents` is
+    absent from some RealityScan builds and an unknown verb makes RC exit
+    non-zero, so the merge has to be switchable without hand-editing a file.
+
+    Note what this does *not* do: it never splits the sequences. Image groups in
+    RC are calibration groups inside one project - they do not partition the
+    reconstruction. Every sequence goes through the same `-align`, and what we
+    want out of it is a single component (CLAUDE.md 7).
+    """
+    lines = [f'-addFolder "{frames_dir}"']
+    lines += [line.strip() for line in rc.extra_align_commands if line.strip()]
+    lines.append("-align")
+    if rc.merge_components:
+        lines.append("-mergeComponents")
+    if rc.keep_largest:
+        lines.append("-selectMaximalComponent")
+    lines += [
+        f'-exportRegistration "{rc_output / "transforms.json"}"',
+        f'-exportSparsePointCloud "{rc_output / "pointcloud.ply"}"',
+        "-quit",
+    ]
+    script = rc_output / "align.rscmd"
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return script
+
+
+# -- Alignment coverage check ------------------------------------------------
+
+def _input_frame_names(frames_dir: Path) -> list[str]:
+    if not frames_dir.is_dir():
+        return []
+    return sorted(
+        f.name for f in frames_dir.iterdir()
+        if f.suffix.lower() in _IMAGE_SUFFIXES
+    )
+
+
+def _basename(raw: str) -> str:
+    """Last path component of a path written by RC, on any host.
+
+    RC writes Windows paths with backslashes and `Path()` only splits those when
+    the interpreter itself runs on Windows - split on both separators so the
+    check does not silently depend on where it executes.
+    """
+    return raw.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _dedup(names) -> list[str]:
+    """Non-empty names, first occurrence wins, order preserved."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _registered_frame_names(rc_output: Path) -> tuple[list[str], Optional[str]]:
+    """Camera names in whatever registration RC managed to export, in export order.
+
+    transforms.json first, registration.csv as a fallback: which of the two
+    exists depends on the export params, and the check must not depend on that.
+    Order is preserved because the names are not always comparable to the input
+    ones (see `_missing_frames`) - position is then the only link left.
+    Returns (names, source_filename) - an empty list means we could not tell.
+    """
+    transforms = rc_output / "transforms.json"
+    if transforms.exists():
+        try:
+            data = json.loads(transforms.read_text(encoding="utf-8"))
+            names = _dedup(
+                _basename(f.get("file_path", "")) for f in data.get("frames", [])
+            )
+            if names:
+                return names, "transforms.json"
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    csv_path = rc_output / "registration.csv"
+    if csv_path.exists():
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as fh:
+                names = _dedup(
+                    _basename(row["#name"])
+                    for row in csv.DictReader(fh)
+                    if row.get("#name")
+                )
+            if names:
+                return names, "registration.csv"
+        except (OSError, KeyError):
+            pass
+
+    return [], None
+
+
+def _missing_frames(
+    input_names: list[str], registered: list[str]
+) -> tuple[set[str], int, str]:
+    """Which of the input frames did not come back registered.
+
+    Names are the natural key, but `-exportRegistration` to a NeRF
+    transforms.json does not keep them: RC exports undistorted copies renamed
+    `00000.png`, `00001.png`... so a fully aligned project matches zero names
+    and used to be reported as 0/N aligned. When *nothing* matches by name, fall
+    back to position - RC exports in the order the images were added, which is
+    the sorted input order.
+
+    Returns (missing_names, missing_count, matched_by) where `matched_by` is the
+    key that worked: "name", "position", or "count" when the export was renamed
+    *and* short, leaving only the totals comparable.
+    """
+    if not registered:
+        return set(input_names), len(input_names), "name"
+
+    known = set(registered)
+    if any(n in known for n in input_names):
+        missing = {n for n in input_names if n not in known}
+        return missing, len(missing), "name"
+
+    # No name in common at all: renamed export, not 100% missing frames.
+    if len(registered) == len(input_names):
+        return set(), 0, "position"
+
+    # Renamed *and* short - we know how many cameras are absent, not which.
+    return set(), max(len(input_names) - len(registered), 0), "count"
+
+
+def _sequence_index(project_path: Path) -> dict[str, int]:
+    """filename -> sequence_id, from the curation scores. {} before analysis."""
+    scores_path = project_path / "analysis" / "scores.json"
+    if not scores_path.exists():
+        return {}
+    try:
+        data = json.loads(scores_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {
+        f["filename"]: int(f.get("sequence_id", 0))
+        for f in data.get("frames", [])
+        if f.get("filename")
+    }
+
+
+def _sequence_breakdown(
+    input_names: list[str], missing: set[str], by_sequence: dict[str, int]
+) -> list[dict]:
+    """Per-sequence input / aligned / missing counts, sorted by sequence id."""
+    if not by_sequence:
+        return []
+    stats: dict[int, dict] = {}
+    for name in input_names:
+        sid = by_sequence.get(name)
+        if sid is None:
+            continue
+        row = stats.setdefault(sid, {"sequence_id": sid, "input": 0, "missing": 0})
+        row["input"] += 1
+        if name in missing:
+            row["missing"] += 1
+    for row in stats.values():
+        row["aligned"] = row["input"] - row["missing"]
+    return [stats[k] for k in sorted(stats)]
+
+
+async def check_alignment_coverage(
+    project_path: Path, rc_output: Path, broadcast_fn
+) -> dict:
+    """Compare what we fed RC against what came back registered.
+
+    `-selectMaximalComponent` keeps the largest component and drops the rest
+    without a word; a 60/40 split then trains LichtFeld on 60% of the scene and
+    simply looks "incomplete" for no visible reason. This is the only place that
+    difference becomes visible. It warns and never fails - a couple of genuinely
+    unalignable frames must not block the pipeline, and the decision to re-align
+    belongs to the user.
+
+    Writes rc_output/alignment_check.json and returns the same payload. Never
+    raises: a broken report must not sink a good alignment.
+    """
+    try:
+        input_names = _input_frame_names(project_path / "frames")
+        registered, source = _registered_frame_names(rc_output)
+
+        if not input_names or source is None:
+            await broadcast_fn(
+                "rc", "WARNING",
+                "[RC] Alignment coverage unknown - no registration export found "
+                "to compare against the input frames.",
+            )
+            report = {
+                "checked": False,
+                "reason": "no registration export" if input_names else "no input frames",
+                "input_count": len(input_names),
+                "aligned_count": 0,
+                "missing_count": 0,
+                "aligned_ratio": None,
+                "single_component": None,
+                "missing_frames": [],
+                "sequences": [],
+                "source": source,
+                "matched_by": None,
+            }
+        else:
+            missing, missing_count, matched_by = _missing_frames(
+                input_names, registered
+            )
+            aligned = len(input_names) - missing_count
+            ratio = aligned / len(input_names)
+            sequences = _sequence_breakdown(
+                input_names, missing, _sequence_index(project_path)
+            )
+            report = {
+                "checked": True,
+                "reason": None,
+                "input_count": len(input_names),
+                "aligned_count": aligned,
+                "missing_count": missing_count,
+                "aligned_ratio": round(ratio, 4),
+                "single_component": missing_count == 0,
+                "missing_frames": sorted(missing),
+                "sequences": sequences,
+                "source": source,
+                "matched_by": matched_by,
+            }
+
+            if missing_count == 0:
+                renamed = (
+                    " RC renamed the exported images, so the cameras were "
+                    "matched by export order."
+                ) if matched_by == "position" else ""
+                await broadcast_fn(
+                    "rc", "SUCCESS",
+                    f"[RC] Coverage OK - {aligned}/{len(input_names)} cameras "
+                    f"registered, single component.{renamed}",
+                )
+            else:
+                hit = [s for s in sequences if s["missing"]]
+                seq_txt = (
+                    " Affected sequences: " + ", ".join(
+                        f"#{s['sequence_id']} ({s['missing']}/{s['input']} missing)"
+                        for s in hit
+                    ) + "."
+                ) if hit else ""
+                if missing:
+                    sample = ", ".join(sorted(missing)[:8])
+                    more = f" (+{len(missing) - 8} more)" if len(missing) > 8 else ""
+                    which = f" Missing: {sample}{more}."
+                else:
+                    which = (
+                        " RC renamed the exported images, so which frames were "
+                        "dropped cannot be read from the export - only how many."
+                    )
+                await broadcast_fn(
+                    "rc", "WARNING",
+                    f"[RC] Alignment split - {aligned}/{len(input_names)} cameras "
+                    f"registered ({ratio:.1%}). {missing_count} frames landed in "
+                    f"another component and were dropped.{seq_txt}{which} Fix: "
+                    f"re-align with a higher image overlap, keep the frames the "
+                    f"overlap gate rejected around the cuts, or merge the "
+                    f"components with control points in the RealityScan GUI.",
+                )
+
+        rc_output.mkdir(parents=True, exist_ok=True)
+        (rc_output / "alignment_check.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8"
+        )
+        return report
+
+    except Exception as exc:  # never sink a good alignment over the report
+        await broadcast_fn(
+            "rc", "WARNING", f"[RC] Alignment coverage check skipped: {exc}"
+        )
+        return {"checked": False, "reason": str(exc)}
+
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -115,7 +416,7 @@ def _build_stub_transforms_json(project_path: Path, rc_output: Path) -> None:
 # ── Real RC runner ──────────────────────────────────────────────────────────
 
 async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
-    """Calls RealityScan.exe via CLI with the rscmd script."""
+    """Calls RealityScan.exe headless with the .rscmd generated for this run."""
     rc_exe_str = app_config.tools.rc_exe_path
     if not rc_exe_str:
         raise FileNotFoundError(
@@ -132,15 +433,15 @@ async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
     frames_dir = project_path / "frames"
     rc_output = project_path / "rc_output"
     rc_output.mkdir(exist_ok=True)
-    scripts_dir = Path(__file__).parents[2] / "scripts"
 
-    cmd = [
-        str(rc_exe),
-        "-headless",
-        "-execRSCMD", str(scripts_dir / "rc_align_export.rscmd"),
-        str(frames_dir),
-        str(rc_output),
-    ]
+    rc = resolve_rc_settings(settings)
+    script = build_rscmd(frames_dir, rc_output, rc)
+    await broadcast_fn(
+        "rc", "INFO",
+        "[RC] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
+    )
+
+    cmd = [str(rc_exe), "-headless", "-execRSCMD", str(script)]
     await broadcast_fn("rc", "INFO", f"[RC] Launching: {' '.join(cmd)}")
 
     loop = asyncio.get_running_loop()
@@ -167,8 +468,13 @@ async def run_rc_real(project_path: Path, broadcast_fn, settings: dict) -> dict:
     if returncode != 0:
         raise RuntimeError(f"RealityCapture exited with code {returncode}")
 
-    await broadcast_fn("rc", "SUCCESS", "[RC] Alignment complete.", progress=1.0)
-    return {"rc_output": str(rc_output)}
+    await broadcast_fn("rc", "INFO", "[RC] Alignment complete - checking coverage.")
+    coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
+
+    aligned = coverage.get("aligned_count")
+    tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
+    await broadcast_fn("rc", "SUCCESS", f"[RC] Step complete{tail}.", progress=1.0)
+    return {"rc_output": str(rc_output), "alignment": coverage}
 
 
 def _classify_rc_line(line: str) -> str:
@@ -194,6 +500,7 @@ async def run_rc_stub(project_path: Path, broadcast_fn, settings: dict) -> dict:
     rc_output.mkdir(exist_ok=True)
     duration = app_config.stubs.rc_stub_duration_seconds
     frame_count = settings.get("frame_count", 120)
+    rc = resolve_rc_settings(settings)
 
     await broadcast_fn(
         "rc", "INFO",
@@ -255,7 +562,10 @@ async def run_rc_stub(project_path: Path, broadcast_fn, settings: dict) -> dict:
         await asyncio.sleep(duration * 0.23 / len(ba_steps))
 
     # --- Phase 5: Export (88–100%)
-    await broadcast_fn("rc", "INFO", "Selecting maximal component...", progress=0.89)
+    if rc.merge_components:
+        await broadcast_fn("rc", "INFO", "Merging components...", progress=0.89)
+    if rc.keep_largest:
+        await broadcast_fn("rc", "INFO", "Selecting maximal component...", progress=0.90)
     await asyncio.sleep(duration * 0.04)
     await broadcast_fn("rc", "INFO", "Exporting registration (transforms.json)...", progress=0.93)
 
@@ -272,17 +582,25 @@ async def run_rc_stub(project_path: Path, broadcast_fn, settings: dict) -> dict:
     )
     await asyncio.sleep(duration * 0.03)
 
-    camera_count = frame_count - random.randint(0, 3)
+    # The stub registers every frame, so the check passes - but it runs on the
+    # same code path as a real run, which is the point of stub mode (CLAUDE.md 2).
+    coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
+
+    camera_count = coverage.get("aligned_count") or frame_count
     point_count = random.randint(180_000, 320_000)
     await broadcast_fn(
         "rc", "SUCCESS",
         f"[STUB] RealityCapture complete. "
-        f"Cameras aligned: {camera_count}/{frame_count} | "
+        f"Cameras aligned: {camera_count}/{coverage.get('input_count', frame_count)} | "
         f"Sparse points: {point_count:,} | "
         f"Output: {rc_output}",
         progress=1.0,
     )
-    return {"rc_output": str(rc_output), "camera_count": camera_count}
+    return {
+        "rc_output": str(rc_output),
+        "camera_count": camera_count,
+        "alignment": coverage,
+    }
 
 
 # ── Dispatcher ──────────────────────────────────────────────────────────────

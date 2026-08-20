@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useState } from 'react';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { AlertTriangle, BookOpen, ChevronRight, FolderOpen, Home, PanelBottomClose, PanelBottomOpen, PanelRightClose, PanelRightOpen, Plus } from 'lucide-react';
+import { AlertTriangle, BookOpen, ChevronRight, FolderOpen, Home, PanelBottomClose, PanelBottomOpen, PanelRightClose, PanelRightOpen, Plus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -13,6 +13,7 @@ import {
 import StepNav from './StepNav';
 import LiveLog from '@/components/panels/LiveLog';
 import HelpPanel from '@/components/panels/HelpPanel';
+import AppSetupPanel from '@/components/settings/AppSetupPanel';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useProjects } from '@/hooks/useProjects';
@@ -39,6 +40,7 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
   const { createProject, selectProject } = useProjects();
   const [logVisible, setLogVisible] = useState(true);
   const [helpVisible, setHelpVisible] = useState(true);
+  const [setupOpen, setSetupOpen] = useState(false);
 
   const currentProject = projects.find((p) => p.id === currentProjectId);
   const StepComponent = STEP_COMPONENTS[currentStep];
@@ -121,6 +123,17 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
           <span style={{ color: '#00D4FF' }}>Step {currentStep}/6</span>
         </div>
         <div className="flex items-center gap-2">
+          {/* Application setup (defaults for every wizard step) */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSetupOpen(true)}
+            title="Application setup"
+            className="text-slate-400 hover:text-slate-100"
+          >
+            <Settings className="w-4 h-4" />
+          </Button>
+          <Separator orientation="vertical" className="h-5 bg-slate-600" />
           {/* Toggle Help panel */}
           <Button
             variant="ghost"
@@ -208,6 +221,8 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
           </div>
         )}
       </div>
+
+      <AppSetupPanel open={setupOpen} onClose={() => setSetupOpen(false)} />
     </div>
   );
 };

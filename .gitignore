@@ -5,3 +5,24 @@
 
 # Allow the projects folder itself
 !3dgs-pipeline-app/projects/
+# --- Added for BETA002 -------------------------------------------------------
+# Heavy artefacts that must never reach GitHub. Some files under these paths
+# were committed before this rule and stay tracked; the rule stops NEW ones.
+
+# Python virtualenv
+3dgs-pipeline-app/.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Node dependencies + Vite pre-bundle cache
+3dgs-pipeline-app/frontend/node_modules/
+
+# Vendored external binaries (LichtFeld Studio, RealityScan, FFmpeg...).
+# LichtFeld ships a 105 MB slang-llvm.dll — over GitHub's hard 100 MB limit.
+3dgs-pipeline-app/tools/
+
+# Editor / local
+*.bak
+.claude/settings.local.json

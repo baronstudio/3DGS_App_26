@@ -7,7 +7,7 @@ interface PlyViewerProps {
   plyUrl?: string;
 }
 
-export const PlyViewer: React.FC<PlyViewerProps> = ({ projectId, plyUrl: plyUrlProp }) => {
+export const PlyViewer: React.FC<PlyViewerProps> = ({ plyUrl: plyUrlProp }) => {
   const exportFiles = usePipelineStore((s) => s.exportFiles);
   const { settings } = useSettings();
 

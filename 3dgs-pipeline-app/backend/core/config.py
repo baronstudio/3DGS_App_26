@@ -56,7 +56,13 @@ def load_config() -> AppConfig:
 
 
 def save_config(cfg) -> None:
-    """Save config to disk. Accepts AppConfig or a flat dict of overrides."""
+    """Save config to disk. Accepts AppConfig, a flat dict, or a nested one.
+
+    config.json is flat on disk, but the API exposes the AppConfig shape
+    (`{tools: {...}, stubs: {...}}`). A nested payload is flattened here rather
+    than written verbatim, which would create dead `tools` / `stubs` keys that
+    load_config never reads back.
+    """
     if isinstance(cfg, dict):
         # Merge incoming dict over the existing file so no field is lost.
         try:
@@ -64,7 +70,11 @@ def save_config(cfg) -> None:
                 flat: dict = json.load(f)
         except Exception:
             flat = {}
-        flat.update(cfg)
+        for key, value in cfg.items():
+            if key in ("tools", "stubs") and isinstance(value, dict):
+                flat.update(value)
+            else:
+                flat[key] = value
     else:
         flat = {}
         flat.update(cfg.tools.model_dump())

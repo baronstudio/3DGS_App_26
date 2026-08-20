@@ -75,6 +75,8 @@ interface PipelineState {
 
 const stepNameToIndex: Record<StepName, number> = {
   extract: 2,
+  // Curation is step 2's second phase, so it reports against the same step.
+  curate: 2,
   rc: 3,
   lfs: 4,
   export: 5,
@@ -173,7 +175,7 @@ export const usePipelineStore = create<PipelineState>()(
         if (saved && typeof saved === 'object') {
           Object.entries(saved).forEach(([k, v]) => {
             const idx = parseInt(k, 10);
-            if (idx >= 1 && idx <= 6 && ['pending', 'running', 'done', 'error'].includes(v)) {
+            if (idx >= 1 && idx <= 6 && ['pending', 'running', 'done', 'error', 'aborted'].includes(v)) {
               state.stepStatuses[idx] = v as StepStatus;
             }
           });
@@ -271,7 +273,14 @@ export const usePipelineStore = create<PipelineState>()(
                 ERROR: 'error',
                 WARNING: 'running',
               };
-              const newStatus = statusMap[msg.level];
+              // msg.status is the explicit state; the level map is only a
+              // fallback for older messages that carry no status field. An abort
+              // arrives as level=WARNING, which the map reads as 'running' — so
+              // without this the aborted step would spin forever.
+              const explicit: StepStatus[] = ['running', 'done', 'error', 'aborted'];
+              const newStatus = explicit.includes(msg.status as StepStatus)
+                ? (msg.status as StepStatus)
+                : statusMap[msg.level];
               if (newStatus) {
                 const prevStatus = state.stepStatuses[stepIdx];
                 state.stepStatuses[stepIdx] = newStatus;
@@ -295,7 +304,7 @@ export const usePipelineStore = create<PipelineState>()(
                   state.currentStep = stepIdx;
                   state.pipelineRunning = true;
                 }
-                if (newStatus === 'done' || newStatus === 'error') {
+                if (newStatus === 'done' || newStatus === 'error' || newStatus === 'aborted') {
                   // Single-step pipeline: mark as not running as soon as the step finishes
                   state.pipelineRunning = false;
                 }

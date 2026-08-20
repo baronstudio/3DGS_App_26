@@ -22,11 +22,6 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ step, label }) => {
   const progress = usePipelineStore((s) => s.stepProgress[step] ?? 0);
   const stepStatuses = usePipelineStore((s) => s.stepStatuses);
 
-  // Determine visual state
-  const isError = Object.values(stepStatuses).some(
-    (_, i) => Object.keys(stepStatuses)[i] && stepStatuses[Number(Object.keys(stepStatuses)[i])] === 'error'
-  );
-
   // Derive active step status from store by step name mapping
   const stepNameToIndex: Record<string, number> = {
     extract: 2, rc: 3, lfs: 4, export: 5, blender: 6,

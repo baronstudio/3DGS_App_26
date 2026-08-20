@@ -3,7 +3,7 @@ pipeline_runner.py — Full orchestrator for the 3DGS pipeline.
 
 Step numbering:
   1  Import       (handled at project creation — skipped here)
-  2  Extract      FFmpeg frame extraction
+  2  Extract      FFmpeg frame extraction, then curation (CLAUDE.md §6)
   3  RC           RealityCapture alignment
   4  LFS          LichtFeld Studio 3DGS training
   5  Export       Copy PLY/splat to export/
@@ -11,12 +11,18 @@ Step numbering:
 """
 
 import asyncio
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlmodel import Session
 
 from backend.api.websocket import broadcast
+from backend.core.steps.step_analyze import (
+    AnalysisAborted,
+    resolve_curate_settings,
+    run_analysis,
+)
 from backend.core.steps.step_blender import run_blender
 from backend.core.steps.step_export import run_export
 from backend.core.steps.step_extract import run_extract
@@ -32,6 +38,12 @@ PROJECTS_DIR = Path(__file__).parents[2] / "projects"
 _abort_flags: dict[str, bool] = {}
 _pause_events: dict[str, asyncio.Event] = {}
 
+
+def _abort_checker(project_id: str):
+    """Injectable predicate so a long step can honour abort (CLAUDE.md §2.6)."""
+    return lambda: bool(_abort_flags.get(project_id))
+
+
 _STEP_NAMES: dict[int, str] = {
     1: "import",
     2: "extract",
@@ -41,19 +53,74 @@ _STEP_NAMES: dict[int, str] = {
     6: "blender",
 }
 
+
+async def _run_extract_and_curate(
+    project_path: Path, broadcast_fn, settings: dict, should_abort=None
+) -> dict:
+    """Step 2 is one job with two phases (CLAUDE.md §6).
+
+    The analysis is skipped only when the project turns curation off; it is
+    always re-runnable on its own afterwards through `run_analysis_only`, so a
+    threshold change never costs a re-extraction.
+    """
+    result = await run_extract(project_path, broadcast_fn, settings)
+
+    curate, _band = resolve_curate_settings(settings)
+    if not (curate.enabled and curate.auto_after_extract):
+        await broadcast_fn(
+            "curate", "INFO",
+            "[curate] Auto-analysis is off — use 'Re-analyse' to curate this set.",
+        )
+        return result
+
+    analysis = await run_analysis(project_path, broadcast_fn, settings, should_abort)
+    result["analysis"] = analysis.get("selection", {}).get("summary")
+    return result
+
+
 _STEP_RUNNERS = {
-    2: run_extract,
+    2: _run_extract_and_curate,
     3: run_rc,
     4: run_lfs,
     5: run_export,
     6: run_blender,
 }
 
+# Steps that accept the abort predicate. The others predate it and check the
+# flag only between steps.
+_ABORT_AWARE_STEPS = {2}
+
 
 def _debug(msg: str) -> None:
-    """Print a timestamped [WIZARD-DEBUG] line to the CLI."""
+    """Print a timestamped [WIZARD-DEBUG] line to the CLI.
+
+    Never lets the console encoding break the pipeline. On a French Windows
+    console stdout is cp1252, which has no mapping for the arrows these messages
+    use, and the resulting UnicodeEncodeError propagates out of the caller — it
+    killed the abort handler mid-way, so the step stayed "running" in the UI. A
+    debug line is never worth an exception.
+    """
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
-    print(f"[WIZARD-DEBUG {ts}] {msg}", flush=True)
+    line = f"[WIZARD-DEBUG {ts}] {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(line.encode(encoding, errors="replace").decode(encoding), flush=True)
+
+
+async def _broadcast_best_effort(*args, **kwargs) -> None:
+    """Broadcast from inside a cancellation handler.
+
+    Awaiting in the `except CancelledError` branch of a task that has just been
+    cancelled can be cancelled again before it completes. The abort notice is
+    the last thing the UI hears, so losing it is what leaves a step stuck on
+    "running" — swallow the second cancellation rather than the message.
+    """
+    try:
+        await asyncio.shield(broadcast(*args, **kwargs))
+    except asyncio.CancelledError:
+        pass
 
 
 def request_abort(project_id: str) -> None:
@@ -197,7 +264,13 @@ async def run_pipeline(
             # ── Execute step ───────────────────────────────────────────────
             try:
                 runner = _STEP_RUNNERS[step]
-                await runner(project_path, broadcast, settings)
+                if step in _ABORT_AWARE_STEPS:
+                    await runner(
+                        project_path, broadcast, settings,
+                        should_abort=_abort_checker(project_id),
+                    )
+                else:
+                    await runner(project_path, broadcast, settings)
 
                 _debug(f"  → Step {step} ({step_name.upper()}) — DONE")
                 step_status[str(step)] = "done"
@@ -214,6 +287,24 @@ async def run_pipeline(
                     f"  → Step {step} done — broadcast 'status=done' sent."
                     f" Frontend must wait for user click to advance wizard."
                 )
+
+            except (AnalysisAborted, asyncio.CancelledError) as exc:
+                # A user abort is not a failure — do not poison the project with
+                # an error_message the user then has to clear by hand. Naming
+                # CancelledError matters: /control cancels the task outright, and
+                # that derives from BaseException, so without this the step
+                # stayed "running" in the UI until a page reload.
+                _debug(f"  → Step {step} ({step_name.upper()}) — ABORTED by user")
+                step_status[str(step)] = "aborted"
+                _update_project(project_id, _step_status_dict=step_status)
+                await _broadcast_best_effort(
+                    step_name, "WARNING",
+                    f"■ Step {step} ({step_name.upper()}) aborted by user.",
+                    status="aborted",
+                )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return
 
             except Exception as exc:
                 step_status[str(step)] = "error"
@@ -244,5 +335,71 @@ async def run_pipeline(
 
     finally:
         _debug(f"  → run_pipeline cleanup for project {project_id}")
+        _abort_flags.pop(project_id, None)
+        _pause_events.pop(project_id, None)
+
+
+# ── Standalone re-analysis ───────────────────────────────────────────────────
+
+async def run_analysis_only(project_id: str, settings: dict = {}) -> None:
+    """Re-run the curation phase of step 2 without touching the extracted frames.
+
+    Threshold tuning is iterative by nature (CLAUDE.md §6.3): the user changes a
+    sensitivity, looks at the gallery, changes it again. Re-extracting for that
+    would be unacceptable, so this reuses frames/ as-is and rewrites only
+    analysis/scores.json and analysis/selection.json. overrides.json is read,
+    never regenerated.
+    """
+    project = _get_project(project_id)
+    if not project:
+        await broadcast("curate", "ERROR", f"Project {project_id} not found")
+        return
+
+    project_path = PROJECTS_DIR / project.slug
+    step_status = project.get_step_status()
+
+    _abort_flags[project_id] = False
+    pause_event = asyncio.Event()
+    pause_event.set()
+    _pause_events[project_id] = pause_event
+
+    _debug(f"run_analysis_only CALLED — project='{project.name}' ({project_id})")
+
+    try:
+        step_status["2"] = "running"
+        _update_project(project_id, _step_status_dict=step_status)
+
+        await run_analysis(
+            project_path, broadcast, settings,
+            should_abort=_abort_checker(project_id),
+        )
+
+        step_status["2"] = "done"
+        _update_project(project_id, _step_status_dict=step_status)
+        await broadcast("curate", "SUCCESS", "✔ Re-analysis complete.", status="done")
+
+    except (AnalysisAborted, asyncio.CancelledError) as exc:
+        # Two ways in: the cooperative flag, observed between chunks, or the hard
+        # task.cancel() the /control route fires as a fallback. CancelledError
+        # derives from BaseException, so it has to be named explicitly — left to
+        # a bare `except Exception` it slips through and the UI stays stuck on
+        # "running" forever.
+        _debug(f"  → run_analysis_only ABORTED for project {project_id}")
+        step_status["2"] = "aborted"
+        _update_project(project_id, _step_status_dict=step_status)
+        await _broadcast_best_effort(
+            "curate", "WARNING", "■ Re-analysis aborted by user.", status="aborted"
+        )
+        if isinstance(exc, asyncio.CancelledError):
+            raise  # a cancelled task must end cancelled
+
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user verbatim
+        exc_detail = f"[{type(exc).__name__}] {exc}" if str(exc) else type(exc).__name__
+        _debug(f"  → run_analysis_only ERROR: {exc_detail}")
+        step_status["2"] = "error"
+        _update_project(project_id, error_message=exc_detail, _step_status_dict=step_status)
+        await broadcast("curate", "ERROR", f"✖ Re-analysis failed: {exc_detail}", status="error")
+
+    finally:
         _abort_flags.pop(project_id, None)
         _pause_events.pop(project_id, None)

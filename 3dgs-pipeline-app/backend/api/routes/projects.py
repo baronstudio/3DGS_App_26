@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 from datetime import datetime
@@ -8,6 +9,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from backend.core.curate.select import DROP, KEEP
+from backend.core.steps.step_analyze import (
+    load_overrides,
+    rebuild_selection,
+    save_overrides,
+)
 from backend.db.database import get_session
 from backend.models.project import Project
 
@@ -68,13 +75,13 @@ async def create_project(
     slug = re.sub(r"[^a-z0-9_-]", "_", body.name.lower())
 
     project_path = get_project_path(slug)
-    for subdir in ["input", "frames", "rc_output", "lfs_output", "export"]:
+    for subdir in ["input", "frames", "analysis", "report", "rc_output", "lfs_output", "export"]:
         (project_path / subdir).mkdir(parents=True, exist_ok=True)
 
     project = Project(
         name=body.name,
         slug=slug,
-        settings_json=str(body.settings) if body.settings else "{}",
+        settings_json=json.dumps(body.settings) if body.settings else "{}",
     )
     session.add(project)
     session.commit()
@@ -210,7 +217,6 @@ async def update_project(
     if body.step_status is not None:
         project.set_step_status(body.step_status)
     if body.settings_json is not None:
-        import json
         project.settings_json = json.dumps(body.settings_json)
     if body.error_message is not None:
         project.error_message = body.error_message
@@ -221,3 +227,86 @@ async def update_project(
     session.refresh(project)
 
     return project_to_dict(project)
+
+
+class PatchProjectBody(BaseModel):
+    """Partial update. Anything omitted is left alone."""
+
+    name: Optional[str] = None
+    current_step: Optional[int] = None
+    step_status: Optional[dict] = None
+    error_message: Optional[str] = None
+    # Deep-merged into settings_json: a project stores only the keys it really
+    # overrides, so changing a default keeps propagating to it (CLAUDE.md §4).
+    settings: Optional[dict] = None
+    # Manual curation verdicts: {"frame_0007.jpg": "keep" | "drop" | null}.
+    # null removes the override and hands the frame back to the automatic verdict.
+    overrides: Optional[dict] = None
+
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    out = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+@router.patch("/{id}")
+async def patch_project(
+    id: str,
+    body: PatchProjectBody,
+    session: Session = Depends(get_session),
+):
+    """Partial update, including the manual keep/drop overrides.
+
+    Flipping a frame only rewrites overrides.json and re-derives selection.json
+    from the existing scores — no image is re-read, so the gallery updates
+    instantly instead of paying for a full re-analysis.
+    """
+    project = session.get(Project, id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if body.name is not None:
+        project.name = body.name
+    if body.current_step is not None:
+        project.current_step = body.current_step
+    if body.step_status is not None:
+        project.set_step_status(body.step_status)
+    if body.error_message is not None:
+        project.error_message = body.error_message
+
+    if body.settings is not None:
+        try:
+            current = json.loads(project.settings_json or "{}")
+        except json.JSONDecodeError:
+            current = {}
+        project.settings_json = json.dumps(_deep_merge(current, body.settings))
+
+    selection = None
+    if body.overrides is not None:
+        project_path = get_project_path(project.slug)
+        overrides = load_overrides(project_path)
+        for frame, verdict in body.overrides.items():
+            safe = Path(frame).name  # never let a path escape analysis/
+            if verdict is None:
+                overrides.pop(safe, None)
+            elif verdict in (KEEP, DROP):
+                overrides[safe] = verdict
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid override '{verdict}' for {safe}. Expected 'keep', 'drop' or null.",
+                )
+        save_overrides(project_path, overrides)
+        selection = rebuild_selection(project_path)
+
+    project.updated_at = datetime.utcnow()
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+
+    return {**project_to_dict(project), "selection": selection}

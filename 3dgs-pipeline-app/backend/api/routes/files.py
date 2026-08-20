@@ -5,12 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from backend.core.steps.step_analyze import read_json
 from backend.db.database import get_session
 from backend.models.project import Project
 
 router = APIRouter()
 
 PROJECTS_DIR = Path(__file__).parents[3] / "projects"
+
+FRAME_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def get_slug_from_id(project_id: str, session: Session) -> str:
@@ -20,41 +23,138 @@ def get_slug_from_id(project_id: str, session: Session) -> str:
     return project.slug
 
 
+@router.get("/{project_id}/probe")
+async def read_probe(project_id: str, session: Session = Depends(get_session)):
+    """ffprobe metadata of the source video, written by the extraction step.
+
+    Returns `{probe: null}` before the first extraction rather than 404 — the
+    caller is a UI hint, not a hard dependency.
+    """
+    slug = get_slug_from_id(project_id, session)
+    probe = read_json(PROJECTS_DIR / slug / "analysis" / "probe.json")
+    return {"probe": probe}
+
+
+@router.get("/{project_id}/analysis")
+async def read_analysis(project_id: str, session: Session = Depends(get_session)):
+    """Everything the curation phase produced, for the timeline and the metrics.
+
+    Absent before the first analysis — the UI shows the extraction-only view in
+    that case, so this answers 200 with nulls rather than 404.
+    """
+    slug = get_slug_from_id(project_id, session)
+    adir = PROJECTS_DIR / slug / "analysis"
+    scores = read_json(adir / "scores.json")
+    selection = read_json(adir / "selection.json")
+    overrides = read_json(adir / "overrides.json") or {}
+    return {
+        "scores": scores,
+        "selection": selection,
+        "overrides": overrides.get("frames", {}),
+        "extract": read_json(adir / "extract.json"),
+        "analysed": scores is not None,
+    }
+
+
+@router.get("/{project_id}/alignment")
+async def read_alignment(project_id: str, session: Session = Depends(get_session)):
+    """Coverage report of the last RC alignment: what we fed in vs what came back.
+
+    Written by step 3 (`rc_output/alignment_check.json`). Answers 200 with null
+    before the first alignment - the caller is a UI panel, not a dependency.
+    """
+    slug = get_slug_from_id(project_id, session)
+    report = read_json(PROJECTS_DIR / slug / "rc_output" / "alignment_check.json")
+    return {"alignment": report}
+
+
+def _verdict_index(slug: str) -> tuple[dict, dict, dict]:
+    """(per-frame measurements, effective verdicts, overrides) — all keyed by filename."""
+    adir = PROJECTS_DIR / slug / "analysis"
+
+    scores = read_json(adir / "scores.json") or {}
+    measurements = {f["filename"]: f for f in scores.get("frames", [])}
+
+    selection = read_json(adir / "selection.json") or {}
+    verdicts: dict[str, dict] = {}
+    for name in selection.get("kept", []):
+        verdicts[name] = {"verdict": "kept", "reason": None}
+    for entry in selection.get("rejected", []):
+        verdicts[entry["frame"]] = {"verdict": "rejected", "reason": entry.get("reason")}
+    for entry in selection.get("warnings", []):
+        if entry["frame"] in verdicts:
+            verdicts[entry["frame"]]["warning"] = entry.get("reason")
+
+    overrides = (read_json(adir / "overrides.json") or {}).get("frames", {})
+    return measurements, verdicts, overrides
+
+
 @router.get("/{project_id}/frames")
 async def list_frames(project_id: str, session: Session = Depends(get_session)):
+    """Frame list carrying the curation verdicts.
+
+    The verdicts come from `analysis/selection.json` and the measurements from
+    `analysis/scores.json`. Before the first analysis every frame reports
+    `verdict: null` — an unanalysed set has no verdict to give, and guessing one
+    from the JPEG file size (as this route used to) is worse than saying so.
+    """
     slug = get_slug_from_id(project_id, session)
     frames_dir = PROJECTS_DIR / slug / "frames"
 
+    empty = {"frames": [], "total": 0, "kept_count": 0, "rejected_count": 0,
+             "warning_count": 0, "analysed": False, "summary": None}
     if not frames_dir.exists():
-        return {"frames": [], "total": 0, "blurry_count": 0}
+        return empty
 
     files = sorted(
-        [f for f in frames_dir.iterdir() if f.suffix.lower() in {".jpg", ".jpeg", ".png"}],
+        (f for f in frames_dir.iterdir() if f.suffix.lower() in FRAME_SUFFIXES),
         key=lambda f: f.name,
     )
-
     if not files:
-        return {"frames": [], "total": 0, "blurry_count": 0}
+        return empty
 
-    sizes = [f.stat().st_size for f in files]
-    threshold_5pct = sorted(sizes)[max(0, int(len(sizes) * 0.05) - 1)] if sizes else 0
+    measurements, verdicts, overrides = _verdict_index(slug)
+    selection = read_json(PROJECTS_DIR / slug / "analysis" / "selection.json") or {}
+    analysed = bool(verdicts)
 
     frames = []
-    blurry_count = 0
-    for f in files:
-        size = f.stat().st_size
-        potentially_blurry = size <= threshold_5pct
-        if potentially_blurry:
-            blurry_count += 1
+    kept_count = rejected_count = warning_count = 0
+    for i, f in enumerate(files):
+        m = measurements.get(f.name, {})
+        v = verdicts.get(f.name, {})
+        verdict = v.get("verdict")
+        if verdict == "kept":
+            kept_count += 1
+        elif verdict == "rejected":
+            rejected_count += 1
+        if v.get("warning"):
+            warning_count += 1
+
         frames.append({
             "filename": f.name,
             "path": (Path(slug) / "frames" / f.name).as_posix(),
-            "size_bytes": size,
+            "size_bytes": f.stat().st_size,
             "url": f"/static/{slug}/frames/{f.name}",
-            "potentially_blurry": potentially_blurry,
+            "index": m.get("index", i),
+            "sequence_id": m.get("sequence_id"),
+            "sharpness": m.get("sharpness"),
+            "sharpness_median": m.get("sharpness_median"),
+            "displacement_pct": m.get("displacement_pct"),
+            "verdict": verdict,
+            "reason": v.get("reason"),
+            "warning": v.get("warning"),
+            "override": overrides.get(f.name),
         })
 
-    return {"frames": frames, "total": len(frames), "blurry_count": blurry_count}
+    return {
+        "frames": frames,
+        "total": len(frames),
+        "kept_count": kept_count,
+        "rejected_count": rejected_count,
+        "warning_count": warning_count,
+        "analysed": analysed,
+        "summary": selection.get("summary"),
+    }
 
 
 class DeleteFramesBody(BaseModel):

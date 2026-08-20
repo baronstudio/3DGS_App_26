@@ -10,6 +10,28 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+    // Single React instance. Without this, a second copy reached through a
+    // transitive path gets its own dispatcher and every hook call throws
+    // "dispatcher is null" as soon as the two are mixed in one render.
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    // Pre-bundle every Radix entry point at server start. Several of these are
+    // only reachable through lazily-loaded wizard steps, so Vite used to
+    // discover them mid-session, re-optimize, and bump the browserHash — which
+    // leaves an already-open tab holding modules from both passes.
+    include: [
+      'react',
+      'react-dom',
+      'radix-ui',
+      '@radix-ui/react-dialog',
+      '@radix-ui/react-label',
+      '@radix-ui/react-radio-group',
+      '@radix-ui/react-select',
+      '@radix-ui/react-slider',
+      '@radix-ui/react-switch',
+      '@radix-ui/react-slot',
+    ],
   },
   server: {
     proxy: {

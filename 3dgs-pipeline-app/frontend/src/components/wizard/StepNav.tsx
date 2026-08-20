@@ -19,6 +19,9 @@ function StatusBadge({ status }: { status: StepStatus }) {
   if (status === 'error') {
     return <XCircle className="w-4 h-4 text-red-400 shrink-0" />;
   }
+  if (status === 'aborted') {
+    return <XCircle className="w-4 h-4 text-amber-400 shrink-0" />;
+  }
   if (status === 'running') {
     return (
       <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
@@ -28,7 +31,7 @@ function StatusBadge({ status }: { status: StepStatus }) {
 }
 
 const StepNav: React.FC = () => {
-  const { stepStatuses, currentStep, setCurrentProject } = usePipelineStore();
+  const { stepStatuses, currentStep } = usePipelineStore();
 
   // Determine max navigable step: max done step index + 1
   const maxDone = Object.entries(stepStatuses)

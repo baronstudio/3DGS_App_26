@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, ArrowRight, Loader2, CheckCircle, ImageOff } from 'lucide-react';
+import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, Loader2, CheckCircle, ImageOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { useProjects } from '@/hooks/useProjects';

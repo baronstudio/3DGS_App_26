@@ -83,11 +83,27 @@ const RCSettings: React.FC<RCSettingsProps> = ({ settings, onChange }) => {
 
       <Separator className="bg-slate-700/50" />
 
-      {/* Component filter */}
+      {/* Components — groups are not components, see CLAUDE.md §7 */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label>Merge components</Label>
+          <p className="text-xs text-slate-500">
+            Tries to fuse split components before export. Turn off if your RealityScan
+            build rejects <code>-mergeComponents</code>.
+          </p>
+        </div>
+        <Switch
+          checked={settings.merge_components}
+          onCheckedChange={(v) => update('merge_components', v)}
+        />
+      </div>
+
       <div className="flex items-center justify-between">
         <div className="space-y-0.5">
           <Label>Keep largest component only</Label>
-          <p className="text-xs text-slate-500">Filters disconnected components</p>
+          <p className="text-xs text-slate-500">
+            Drops whatever did not merge. What it drops is reported after the run.
+          </p>
         </div>
         <Switch
           checked={settings.keep_largest}

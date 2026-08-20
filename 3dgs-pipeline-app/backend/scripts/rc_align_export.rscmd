@@ -1,6 +1,0 @@
--addFolder "$(arg1)"
--align
--selectMaximalComponent
--exportRegistration "$(arg2)/transforms.json"
--exportSparsePointCloud "$(arg2)/pointcloud.ply"
--quit
