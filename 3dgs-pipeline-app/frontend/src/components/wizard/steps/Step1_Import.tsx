@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, Loader2, CheckCircle, ImageOff } from 'lucide-react';
+import { UploadCloud, X, FolderOpen, Trash2, Film, FileText, Loader2, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { useProjects } from '@/hooks/useProjects';
 import apiClient from '@/api/client';
-import type { StepStatus } from '@/types';
+import { ProjectList } from '@/components/projects/ProjectList';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -262,6 +262,10 @@ const ManageSources: React.FC = () => {
           Upload at least one .mp4 or .mov video to continue
         </p>
       )}
+
+      {/* Same list as the create screen: with a project open it is the only way
+          back to copy / reset / archive / delete without leaving the wizard. */}
+      <ProjectList embedded heading="All projects" />
     </div>
   );
 };
@@ -270,7 +274,7 @@ const ManageSources: React.FC = () => {
 // Sub-component: create a new project
 // ---------------------------------------------------------------------------
 const CreateProject: React.FC = () => {
-  const { projects, setCurrentProject, setCurrentStep, hydrateFromProject } = usePipelineStore();
+  const { projects, setCurrentProject, setCurrentStep } = usePipelineStore();
   const { createProject } = useProjects();
 
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
@@ -342,16 +346,6 @@ const CreateProject: React.FC = () => {
     } finally {
       setLoading(false);
       setUploadProgress(0);
-    }
-  };
-
-  const handleResumeProject = (id: string) => {
-    const project = projects.find((p) => p.id === id);
-    setCurrentProject(id);
-    if (project) {
-      hydrateFromProject(project);
-    } else {
-      setCurrentStep(2);
     }
   };
 
@@ -459,65 +453,9 @@ const CreateProject: React.FC = () => {
         {uploadLabel}
       </Button>
 
-      {/* Existing projects */}
-      {projects.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-            Resume existing project
-          </p>
-          <div className="flex flex-col gap-2">
-            {projects.map((p) => {
-              const TOTAL_STEPS = 6;
-              const stepStatus = p.step_status as Record<string, StepStatus> | undefined;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => handleResumeProject(p.id)}
-                  className="flex items-center gap-3 rounded-md bg-slate-700/60 hover:bg-slate-700 border border-slate-600 px-3 py-2 text-left transition-colors"
-                >
-                  {/* Thumbnail */}
-                  <div className="w-12 h-12 shrink-0 rounded overflow-hidden bg-slate-800 border border-slate-600 flex items-center justify-center">
-                    {p.thumbnail_url ? (
-                      <img
-                        src={`http://localhost:8000${p.thumbnail_url}`}
-                        alt="thumb"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <ImageOff className="w-5 h-5 text-slate-600" />
-                    )}
-                  </div>
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-100 truncate">{p.name}</p>
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <div className="flex gap-0.5">
-                        {Array.from({ length: TOTAL_STEPS }, (_, i) => {
-                          const s = stepStatus?.[String(i + 1)];
-                          return (
-                            <div
-                              key={i}
-                              className={`h-1.5 w-4 rounded-full ${
-                                s === 'done' ? 'bg-green-500' :
-                                s === 'running' ? 'bg-cyan-400 animate-pulse' :
-                                s === 'error' ? 'bg-red-500' :
-                                'bg-slate-600'
-                              }`}
-                            />
-                          );
-                        })}
-                      </div>
-                      <span className="text-xs text-slate-400">
-                        {p.current_step > 0 ? `Step ${p.current_step}/${TOTAL_STEPS}` : 'Not started'}
-                      </span>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* Existing projects — the shared list, so copy / reset / archive /
+          delete and the path + date labels are the same everywhere (§14) */}
+      {projects.length > 0 && <ProjectList embedded heading="Resume existing project" />}
     </div>
   );
 };

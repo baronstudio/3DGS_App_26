@@ -26,7 +26,12 @@ import {
 } from '@/components/ui/select';
 import { useDefaults } from '@/hooks/useDefaults';
 import { useSettings } from '@/hooks/useSettings';
-import type { AppDefaults, DefaultsSection } from '@/types';
+import type {
+  AppDefaults,
+  ColmapExportDefaults,
+  DefaultsSection,
+  UndistortDefaults,
+} from '@/types';
 
 /* ── Small field primitives ─────────────────────────────────────────────── */
 
@@ -134,6 +139,14 @@ const PathField: React.FC<{
   );
 };
 
+/** Groups a run of rows under a heading, for sections long enough to need one. */
+const SubHeading: React.FC<{ title: string; note?: string }> = ({ title, note }) => (
+  <div className="pt-5 pb-1">
+    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-400">{title}</p>
+    {note && <p className="text-xs text-slate-500 mt-1 leading-snug max-w-prose">{note}</p>}
+  </div>
+);
+
 const Choice: React.FC<{
   value: string;
   onChange: (v: string) => void;
@@ -208,6 +221,32 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
 
   const patch = <S extends DefaultsSection>(s: S, key: keyof AppDefaults[S], value: unknown) => {
     setDraft((d) => (d ? { ...d, [s]: { ...d[s], [key]: value } } : d));
+  };
+
+  // rc.colmap is two levels deep and rc.colmap.undistort three, which `patch`
+  // cannot reach without replacing the whole sub-object and dropping its
+  // siblings on every keystroke.
+  const patchColmap = (key: keyof ColmapExportDefaults, value: unknown) => {
+    setDraft((d) =>
+      d ? { ...d, rc: { ...d.rc, colmap: { ...d.rc.colmap, [key]: value } } } : d,
+    );
+  };
+
+  const patchUndistort = (key: keyof UndistortDefaults, value: unknown) => {
+    setDraft((d) =>
+      d
+        ? {
+            ...d,
+            rc: {
+              ...d.rc,
+              colmap: {
+                ...d.rc.colmap,
+                undistort: { ...d.rc.colmap.undistort, [key]: value },
+              },
+            },
+          }
+        : d,
+    );
   };
 
   const handleSave = async () => {
@@ -509,6 +548,228 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   <Switch
                     checked={draft.rc.keep_largest}
                     onCheckedChange={(v) => patch('rc', 'keep_largest', v)}
+                  />
+                </Row>
+                <Row
+                  label="Merge components"
+                  hint="Runs -mergeComponents before the maximal-component selection. Turn off if your RealityScan build rejects the verb."
+                >
+                  <Switch
+                    checked={draft.rc.merge_components}
+                    onCheckedChange={(v) => patch('rc', 'merge_components', v)}
+                  />
+                </Row>
+                <Row
+                  label="Normalise export for LichtFeld"
+                  hint="Hoists PINHOLE intrinsics to the top level of transforms.json and rotates the sparse cloud onto the cameras. Affects the NeRF export only, never the COLMAP one."
+                >
+                  <Switch
+                    checked={draft.rc.normalise_for_lfs}
+                    onCheckedChange={(v) => patch('rc', 'normalise_for_lfs', v)}
+                  />
+                </Row>
+
+                <SubHeading
+                  title="COLMAP export"
+                  note="Written next to transforms.json, not instead of it. LichtFeld Studio picks the COLMAP dataset over the NeRF one on its own, and it carries one intrinsic per image rather than one median for all of them — which matters because RealityScan crops every undistorted image slightly differently."
+                />
+                <Row label="Export COLMAP dataset">
+                  <Switch
+                    checked={draft.rc.colmap.enabled}
+                    onCheckedChange={(v) => patchColmap('enabled', v)}
+                  />
+                </Row>
+                <Row
+                  label="Directory structure"
+                  hint="Standard puts the images in images/ and the model in sparse/0/ — the layout LichtFeld Studio looks for first."
+                >
+                  <Choice
+                    value={draft.rc.colmap.directory_structure}
+                    onChange={(v) => patchColmap('directory_structure', v)}
+                    options={[
+                      { value: 'standard', label: 'COLMAP standard' },
+                      { value: 'flat', label: 'Flat' },
+                    ]}
+                  />
+                </Row>
+                <Row
+                  label="File type"
+                  hint="Binary is what LichtFeld Studio takes when both are present, and points3D in ASCII runs to hundreds of megabytes."
+                >
+                  <Choice
+                    value={draft.rc.colmap.file_type}
+                    onChange={(v) => patchColmap('file_type', v)}
+                    options={[
+                      { value: 'binary', label: 'Binary (.bin)' },
+                      { value: 'ascii', label: 'ASCII (.txt)' },
+                    ]}
+                  />
+                </Row>
+                <Row
+                  label="Exclude unreliable tie points"
+                  hint="Drops the tie points RealityScan flagged weak, ill-conditioned or outlier. They seed the gaussians, so a cleaner cloud beats a bigger one."
+                >
+                  <Switch
+                    checked={draft.rc.colmap.exclude_unreliable_tie_points}
+                    onCheckedChange={(v) => patchColmap('exclude_unreliable_tie_points', v)}
+                  />
+                </Row>
+                <Row
+                  label="Export masks"
+                  hint="Off — this app has no mask source yet, so there is nothing to export."
+                >
+                  <Switch
+                    checked={draft.rc.colmap.export_masks}
+                    onCheckedChange={(v) => patchColmap('export_masks', v)}
+                  />
+                </Row>
+                {draft.rc.colmap.export_masks && (
+                  <Row label="Mask extension">
+                    <Choice
+                      value={draft.rc.colmap.mask_extension}
+                      onChange={(v) => patchColmap('mask_extension', v)}
+                      options={[
+                        { value: 'mask_ext', label: '.mask.ext' },
+                        { value: 'ext', label: '.ext' },
+                      ]}
+                    />
+                  </Row>
+                )}
+                <Row
+                  label="Scene rotation X (deg)"
+                  hint="180 keeps a COLMAP-trained splat the same way up as a transforms.json-trained one: RealityScan's COLMAP template rotates the scene Rx+90, and LichtFeld's COLMAP loader — unlike its NeRF loader — does not compensate. Set 0 only where RC's +Z was never the true vertical."
+                >
+                  <NumField
+                    value={draft.rc.colmap.scene_rotate_x_deg}
+                    step={90}
+                    onChange={(v) => patchColmap('scene_rotate_x_deg', v)}
+                  />
+                </Row>
+
+                <SubHeading
+                  title="Undistortion settings"
+                  note="Not really optional for COLMAP: RealityScan refuses to write a COLMAP camera for its own division distortion model, and the camera-model id it falls back to is not one LichtFeld Studio accepts."
+                />
+                <Row label="Undistort images">
+                  <Switch
+                    checked={draft.rc.colmap.undistort.enabled}
+                    onCheckedChange={(v) => patchUndistort('enabled', v)}
+                  />
+                </Row>
+                <Row label="Export images">
+                  <Switch
+                    checked={draft.rc.colmap.undistort.export_images}
+                    onCheckedChange={(v) => patchUndistort('export_images', v)}
+                  />
+                </Row>
+                <Row label="Fit">
+                  <Choice
+                    value={draft.rc.colmap.undistort.fit}
+                    onChange={(v) => patchUndistort('fit', v)}
+                    options={[
+                      { value: 'inner_region', label: 'Inner region' },
+                      { value: 'outer_boundary', label: 'Outer boundary' },
+                      { value: 'in_between', label: 'In between' },
+                    ]}
+                  />
+                </Row>
+                <Row label="Resolution">
+                  <Choice
+                    value={draft.rc.colmap.undistort.resolution}
+                    onChange={(v) => patchUndistort('resolution', v)}
+                    options={[
+                      { value: 'fit', label: 'Fit' },
+                      { value: 'preserve', label: 'Preserve' },
+                      { value: 'custom', label: 'Custom' },
+                    ]}
+                  />
+                </Row>
+                {draft.rc.colmap.undistort.resolution === 'custom' && (
+                  <>
+                    <Row label="Custom width">
+                      <NumField
+                        value={draft.rc.colmap.undistort.custom_width}
+                        min={0}
+                        onChange={(v) => patchUndistort('custom_width', v)}
+                      />
+                    </Row>
+                    <Row label="Custom height">
+                      <NumField
+                        value={draft.rc.colmap.undistort.custom_height}
+                        min={0}
+                        onChange={(v) => patchUndistort('custom_height', v)}
+                      />
+                    </Row>
+                  </>
+                )}
+                <Row label="Downscale">
+                  <NumField
+                    value={draft.rc.colmap.undistort.downscale}
+                    min={1}
+                    onChange={(v) => patchUndistort('downscale', v)}
+                  />
+                </Row>
+                <Row
+                  label="Undistort principal point"
+                  hint="Undistorts for a principal point of (0, 0)."
+                >
+                  <Switch
+                    checked={draft.rc.colmap.undistort.undistort_principal_point}
+                    onCheckedChange={(v) => patchUndistort('undistort_principal_point', v)}
+                  />
+                </Row>
+                <Row label="Image cut-out">
+                  <NumField
+                    value={draft.rc.colmap.undistort.image_cutout}
+                    step={0.05}
+                    min={0}
+                    onChange={(v) => patchUndistort('image_cutout', v)}
+                  />
+                </Row>
+                <Row
+                  label="Max count of pixels"
+                  hint="0 = no resampling. Anything else rescales the intrinsics along with the image."
+                >
+                  <NumField
+                    value={draft.rc.colmap.undistort.max_pixels}
+                    step={1000000}
+                    min={0}
+                    onChange={(v) => patchUndistort('max_pixels', v)}
+                  />
+                </Row>
+                <Row label="Image format">
+                  <Choice
+                    value={draft.rc.colmap.undistort.image_format}
+                    onChange={(v) => patchUndistort('image_format', v)}
+                    options={[
+                      { value: 'png', label: 'PNG' },
+                      { value: 'jpg', label: 'JPG' },
+                      { value: 'tiff', label: 'TIFF' },
+                    ]}
+                  />
+                </Row>
+                <Row label="Pixel format">
+                  <TextField
+                    value={draft.rc.colmap.undistort.pixel_format}
+                    placeholder="24-bit BGR"
+                    onChange={(v) => patchUndistort('pixel_format', v)}
+                  />
+                </Row>
+                <Row label="Naming convention">
+                  <Choice
+                    value={draft.rc.colmap.undistort.naming_convention}
+                    onChange={(v) => patchUndistort('naming_convention', v)}
+                    options={[
+                      { value: 'sequential', label: '00000...' },
+                      { value: 'original', label: 'Original file name' },
+                    ]}
+                  />
+                </Row>
+                <Row label="Background colour">
+                  <TextField
+                    value={draft.rc.colmap.undistort.background_color}
+                    placeholder="#000000"
+                    onChange={(v) => patchUndistort('background_color', v)}
                   />
                 </Row>
               </div>

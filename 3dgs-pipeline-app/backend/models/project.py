@@ -20,6 +20,10 @@ class Project(SQLModel, table=True):
     frame_count: int = 0
     settings_json: str = "{}"
     error_message: Optional[str] = None
+    # Archived: the files live in a .zip under projects/_archives/ and the row
+    # stays in the list, read-only, until it is restored (CLAUDE.md §14).
+    archived_at: Optional[datetime] = None
+    archive_path: Optional[str] = None
 
     def get_step_status(self) -> dict:
         return json.loads(self.step_status)

@@ -11,7 +11,34 @@ export interface Project {
   settings_json: string;
   error_message: string | null;
   thumbnail_url: string | null;
+  /** Absolute path of projects/<slug>/ on this machine — shown on the tile. */
+  path: string;
+  /** Archived: the files are zipped away and the project is read-only. */
+  archived: boolean;
+  archived_at: string | null;
+  archive_path: string | null;
 }
+
+/**
+ * A project-level file operation in flight (copy / reset / archive / restore).
+ * It lives in the store, not in the list component, because the list unmounts
+ * as soon as the user changes step — and the progress view must not go with it.
+ */
+export interface ProjectOperation {
+  projectId: string;
+  /** Imperative title of the modal: "Copying project". */
+  title: string;
+  projectName: string;
+  /** 0 → 1, from the WS bus. */
+  progress: number;
+  message: string;
+  /** Set when the operation failed; the modal then waits to be dismissed. */
+  error: string | null;
+}
+
+/** Wizard steps a reset can wipe. Step 1 (import) owns the source video and is
+ *  never reset — that is the whole point of the option. */
+export const RESETTABLE_STEPS = [2, 3, 4, 5, 6] as const;
 
 // 'curate' is the second phase of wizard step 2, not a seventh step: it gets
 // its own name so the UI can show its progress separately (CLAUDE.md §6).
@@ -122,11 +149,43 @@ export interface CurateDefaults {
   overlap_band_max_pct: number;
 }
 
+/** RealityScan's "Undistortion settings" block (CLAUDE.md §7.2). */
+export interface UndistortDefaults {
+  enabled: boolean;
+  fit: 'outer_boundary' | 'inner_region' | 'in_between';
+  resolution: 'preserve' | 'custom' | 'fit';
+  custom_width: number;
+  custom_height: number;
+  downscale: number;
+  undistort_principal_point: boolean;
+  image_cutout: number;
+  max_pixels: number;
+  export_images: boolean;
+  image_format: 'png' | 'jpg' | 'tiff';
+  pixel_format: string;
+  naming_convention: 'sequential' | 'original';
+  background_color: string;
+}
+
+/** The COLMAP registration export of step 3. */
+export interface ColmapExportDefaults {
+  enabled: boolean;
+  directory_structure: 'standard' | 'flat';
+  file_type: 'binary' | 'ascii';
+  exclude_unreliable_tie_points: boolean;
+  export_masks: boolean;
+  mask_extension: 'ext' | 'mask_ext';
+  scene_rotate_x_deg: number;
+  undistort: UndistortDefaults;
+}
+
 export interface RCDefaults {
   precision: 'Preview' | 'Normal' | 'High';
   max_features: number;
   keep_largest: boolean;
   merge_components: boolean;
+  normalise_for_lfs: boolean;
+  colmap: ColmapExportDefaults;
   extra_align_commands: string[];
 }
 

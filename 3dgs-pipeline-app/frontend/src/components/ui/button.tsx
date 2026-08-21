@@ -41,20 +41,32 @@ const buttonVariants = cva(
   }
 )
 
-function Button({
-  className,
-  variant = "default",
-  size = "default",
-  asChild = false,
-  ...props
-}: React.ComponentProps<"button"> &
+type ButtonProps = React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
-  }) {
+  }
+
+/**
+ * forwardRef is not optional here, whatever the upstream shadcn file looks like.
+ * That version is written for React 19, where a function component receives
+ * `ref` as a plain prop; this app is on React 18.3, where React strips it and
+ * the ref silently evaporates.
+ *
+ * What that broke: `<DropdownMenuTrigger asChild><Button/></DropdownMenuTrigger>`
+ * gave Radix no anchor element, and an unanchored Popper never sets
+ * `isPositioned` — it parks its content at `translate(0, -200%)`, off-screen
+ * (@radix-ui/react-popper). So every menu opened correctly and was drawn just
+ * above the top of the page: the trigger looked dead.
+ */
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { className, variant = "default", size = "default", asChild = false, ...props },
+  ref
+) {
   const Comp = asChild ? Slot.Root : "button"
 
   return (
     <Comp
+      ref={ref}
       data-slot="button"
       data-variant={variant}
       data-size={size}
@@ -62,6 +74,6 @@ function Button({
       {...props}
     />
   )
-}
+})
 
 export { Button, buttonVariants }

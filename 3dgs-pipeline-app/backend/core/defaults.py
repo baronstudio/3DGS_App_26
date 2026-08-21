@@ -126,6 +126,80 @@ class CurateDefaults(BaseModel):
     overlap_band_max_pct: float = 12.0
 
 
+class UndistortDefaults(BaseModel):
+    """RealityScan's "Undistortion settings" block, as the export dialog shows it.
+
+    Not a free choice: RC refuses to write a COLMAP camera for its own
+    `division` distortion model ("COLMAP does not support the distortion model
+    'division' used during alignment. Export with respect to undistorted images
+    instead."), and the model id it falls back to is 13, which is not a COLMAP
+    model at all — LichtFeld Studio answers that with `Invalid camera model ID
+    13 for image`. So `enabled` and `export_images` stay on unless the whole
+    COLMAP export is off.
+    """
+    enabled: bool = True
+    # Which part of the undistorted frame survives the crop. RC crops every
+    # image slightly differently, which is exactly why COLMAP (one intrinsic
+    # per image) beats the NeRF path (one intrinsic for all of them).
+    fit: Literal["outer_boundary", "inner_region", "in_between"] = "inner_region"
+    resolution: Literal["preserve", "custom", "fit"] = "fit"
+    custom_width: int = 0
+    custom_height: int = 0
+    downscale: int = 1
+    undistort_principal_point: bool = True
+    image_cutout: float = 1.0
+    # 0 = no resampling. Anything else silently rescales the intrinsics too.
+    max_pixels: int = 0
+    export_images: bool = True
+    image_format: Literal["png", "jpg", "tiff"] = "png"
+    pixel_format: str = "24-bit BGR"
+    naming_convention: Literal["sequential", "original"] = "sequential"
+    background_color: str = "#000000"
+
+
+class ColmapExportDefaults(BaseModel):
+    """The COLMAP registration export of step 3 (TODO P1).
+
+    RealityScan 2.2 ships the exporter — `calibration.xml` registers format
+    `{280B11A4-F9A3-47D1-AE58-C0DEA33487D8}` with
+    `writer="RealityScan.Export.COLMAP"` — so this block is the dialog's
+    parameters, not an invention of ours.
+    """
+    enabled: bool = True
+    # "COLMAP standard" is RC's own wording for images/ + sparse/0/, which is
+    # the layout LichtFeld Studio's loader looks for first. "flat" drops
+    # everything in one directory; LFS copes ("Detected flat structure - using
+    # root directory for images") but nothing else does.
+    directory_structure: Literal["standard", "flat"] = "standard"
+    # LFS prefers binary when both are present ("Found both binary and text
+    # COLMAP files. Prioritizing binary files."), and points3D in ASCII is a
+    # couple of hundred megabytes for a real alignment.
+    file_type: Literal["binary", "ascii"] = "binary"
+    # Tie points RC flagged weak, ill-conditioned or outlier. They seed the
+    # gaussians, so a cleaner cloud is worth more here than a bigger one.
+    exclude_unreliable_tie_points: bool = True
+    # Off by default: this app has no mask source (the SAM 2 module of §9 is
+    # deferred), so there is nothing to export.
+    export_masks: bool = False
+    mask_extension: Literal["ext", "mask_ext"] = "mask_ext"
+    # "Export transformation settings" -> "Rotate X" in the dialog, and the
+    # reason the trained splat comes out the right way up.
+    #
+    # RC's COLMAP template already rotates the scene by Rx+90,
+    # `(x, y, z) -> (x, -z, y)`, which sends RC's +Z onto -Y. LFS's NeRF loader
+    # cancels that with its own Rx+180; its COLMAP loader does not, because
+    # COLMAP is already the convention it wants. 180 here composes to Rx-90
+    # overall, `(x, y, z) -> (x, z, -y)`, so a COLMAP-trained splat lands in
+    # exactly the frame a transforms.json-trained one does today and nothing
+    # downstream — viewer/frame.ts, export/, Blender — has to change.
+    #
+    # The order RC applies it in does not matter: rotations about the same axis
+    # commute, so 180 before or after the template's swap gives the same frame.
+    # Set 0 for a scene where RC's +Z was never the true vertical.
+    scene_rotate_x_deg: float = 180.0
+    undistort: UndistortDefaults = Field(default_factory=UndistortDefaults)
+
+
 class RCDefaults(BaseModel):
     precision: Literal["Preview", "Normal", "High"] = "Normal"
     max_features: int = 60000
@@ -141,6 +215,10 @@ class RCDefaults(BaseModel):
     # RC's Z-up frame into the NeRF Y-up one the registration uses. Off only if
     # a future RC build starts exporting both in agreement.
     normalise_for_lfs: bool = True
+    # COLMAP registration export (TODO P1). Kept alongside transforms.json, not
+    # instead of it: the coverage check, the camera overlay and the preview all
+    # read the NeRF export, and LFS picks COLMAP over it on its own anyway.
+    colmap: ColmapExportDefaults = Field(default_factory=ColmapExportDefaults)
     # Raw .rscmd lines injected before -align, used verbatim. Escape hatch for
     # verbs this app does not model (alignment -set parameters, marker import…)
     # without having to patch step_rc.py.

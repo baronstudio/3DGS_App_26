@@ -27,21 +27,37 @@ projects/<slug>/rc_output/
 
 LFS is then invoked with `-d <rc_output>` unchanged — same flag, better dataset.
 
-**Two routes, decide by testing the installed RealityScan first:**
+**Route decided 2026-08-21: native RC export.** RealityScan 2.2 registers the
+exporter in its own `calibration.xml` (format `{280B11A4-…}`,
+`writer="RealityScan.Export.COLMAP"`), so no converter is needed — `build_rscmd()`
+adds a second `-exportRegistration` pointing at an export-params XML generated
+per run from `rc.colmap` (`core/steps/rc_export_params.py`). `directory_structure:
+standard` is RC's own name for `images/` + `sparse/0/`, so the layout above comes
+out of RC directly. See the two 2026-08-21 rows in CLAUDE.md §12.
 
-1. **Native RC export.** Check whether this build exposes a COLMAP registration
-   export preset (`-exportRegistration <path> <exportParams.xml>`). If it does,
-   this is one extra line in `build_rscmd()` and nothing else to maintain.
-2. **Our own converter** (`backend/core/steps/colmap.py`, pure, no FastAPI), from
-   `transforms.json` + `pointcloud.ply` → COLMAP **text** format. Text is enough:
-   every loader reads it, and it stays diff-able.
+**The trap, and where it actually was:** not the OpenGL→OpenCV flip — RC's
+template does that itself — but the *world* frame. It hard-codes `Rx+90`, which
+LFS's COLMAP loader passes through where its NeRF loader would have cancelled it.
+`rc.colmap.scene_rotate_x_deg = 180` composes that back to `Rx-90` so the trained
+splat stays the way up it is today.
 
-**The trap either way:** conventions. `transforms.json` carries camera-to-world
-matrices in the NeRF/OpenGL frame (Y up, Z back); COLMAP `images.txt` wants
-world-to-camera as a quaternion + translation in the OpenCV frame (Y down, Z
-forward). Getting this silently wrong produces a dataset that trains and looks
-like mush. Write the axis flip and the inversion with a round-trip unit test
-(`c2w → colmap → c2w` back to within 1e-6) before wiring it into the step.
+**Still open — this is what remains of P1:**
+
+- **Nothing has been run against real RealityScan yet.** The parameter *names*
+  are RC's (recovered from the executable's string table: `colmapDirStructure`,
+  `colmapFileType`, `colmapPointFiltering`, `colmapExportMasks`,
+  `colmapMaskExtension`, the `undist*` family, `MvsExportRotationX`), but only
+  `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` appear literally — `CDS_FLAT`,
+  `CFT_BIN`, `CME_MASK_EXT`, `UFM_*` and `URM_*` are inferred, as is the
+  `<format><parameter variable= value=>` wrapper. Save the settings out of RC's
+  export dialog once and run `rc_export_params.verify_against_saved_params()`
+  against it; that one file settles all of it.
+- **Stub mode does not produce a `sparse/0/`.** The stub emulates RC's *result*,
+  and RC is what writes the COLMAP files here, so there is nothing to reuse.
+  Either the stub writes a small COLMAP set of its own, or step 4 keeps falling
+  back to `transforms.json` when stubbed — decide once the real path is proven.
+- **Step 4 does not say which dataset it trained on.** LFS switches from NeRF to
+  COLMAP silently; until it is logged, a half-written `sparse/0/` is invisible.
 
 **Acceptance:**
 - Real RC run and stub run both produce `sparse/0/` and pass a re-import check.
@@ -87,6 +103,30 @@ Still open, deliberately:
   that never came back, and they have no pose — the viewer marks the amber
   *edges* of each hole instead. Actual per-component colouring needs RC to
   export more than the maximal component.
+
+---
+
+## ~~P3 — Project options: copy, reset, archive, info~~ — DONE 2026-08-21
+
+Each tile of the Projects list carries a `⋮` menu: **Copy** (asks for a name,
+duplicates files + wizard position), **Reset** (whole project or from any step —
+`input/` is always kept), **Archive** (zips to `projects/_archives/<slug>.zip`,
+the row stays in the list, disabled, until restored) and **Delete**. The tiles
+now show the full path, the creation date and the last update. Spec: CLAUDE.md
+§14; file operations in `backend/core/project_ops.py`.
+
+Left open on purpose:
+
+- **Copy / archive / restore are held requests, not polled jobs.** They run in a
+  worker thread and stream per-file progress on `/ws/logs` behind a blocking
+  modal (§14.2), so nothing looks hung — but the POST still stays open for the
+  whole operation, and a browser reload mid-copy leaves the request orphaned and
+  the modal gone (the files still land; the list needs a refresh). The preview
+  build solved this with a POST that returns at once (§12, 2026-08-20); that is
+  the pattern to copy if it ever bites.
+- **No archive of the archive.** Restoring unpacks and deletes the zip; there is
+  no "export this project somewhere else" verb, which is what a real backup would
+  be.
 
 ---
 

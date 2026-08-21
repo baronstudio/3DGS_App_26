@@ -14,6 +14,7 @@ import StepNav from './StepNav';
 import LiveLog from '@/components/panels/LiveLog';
 import HelpPanel from '@/components/panels/HelpPanel';
 import AppSetupPanel from '@/components/settings/AppSetupPanel';
+import ProjectOperationDialog from '@/components/projects/ProjectOperationDialog';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useProjects } from '@/hooks/useProjects';
@@ -43,6 +44,8 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
   const [setupOpen, setSetupOpen] = useState(false);
 
   const currentProject = projects.find((p) => p.id === currentProjectId);
+  // Archived projects are not selectable: their files are zipped away.
+  const liveProjects = projects.filter((p) => !p.archived);
   const StepComponent = STEP_COMPONENTS[currentStep];
 
   const handleAbort = async () => {
@@ -102,7 +105,7 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="bottom" className="w-56 bg-slate-800 border-slate-700 text-slate-100">
-              {projects.map((p) => (
+              {liveProjects.map((p) => (
                 <DropdownMenuItem
                   key={p.id}
                   className="cursor-pointer hover:bg-slate-700"
@@ -111,7 +114,7 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
                   <span className="truncate">{p.name}</span>
                 </DropdownMenuItem>
               ))}
-              {projects.length > 0 && <DropdownMenuSeparator className="bg-slate-700" />}
+              {liveProjects.length > 0 && <DropdownMenuSeparator className="bg-slate-700" />}
               <DropdownMenuItem className="cursor-pointer hover:bg-slate-700 gap-2" onClick={handleNewProject}>
                 <Plus className="w-3 h-3" />
                 New Project
@@ -223,6 +226,10 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
       </div>
 
       <AppSetupPanel open={setupOpen} onClose={() => setSetupOpen(false)} />
+
+      {/* Blocking progress for copy / reset / archive / restore. Mounted here,
+          not in the project list, so changing step does not hide it (§14). */}
+      <ProjectOperationDialog />
     </div>
   );
 };

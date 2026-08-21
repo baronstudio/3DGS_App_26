@@ -110,6 +110,7 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
 │   │                          #   + rc_postprocess (RC export → LFS, §7.2)
 │   └── core/curate/            # sharpness, scenes, overlap, select  (pure, no FastAPI)
 ├── frontend/src/…
+├── projects/_archives/         # ⚙ <slug>.zip of archived projects (§14)
 └── projects/<slug>/            # ⚠ user data — never auto-deleted
     ├── input/                  # source video(s)          (FrameGate "sources")
     ├── frames/                 # extracted JPEG frames    (FrameGate "cache/frames")
@@ -313,11 +314,23 @@ Three consequences worth keeping:
   costs one rebuild.
 
 The camera overlay reads `rc_output/transforms.json` — camera-to-world in the
-OpenGL frame, which is three.js's frame, so the matrices go in untouched.
+OpenGL frame, which is three.js's frame, so the basis goes in untouched.
 Frustums are coloured per sequence and the path breaks at each cut. The frames
 RC dropped cannot be drawn (they are absent from the export *because* they have
 no pose); what is drawn instead is the amber edge of each hole, the bridge
 frames of §7.1.
+
+**Up is not the same way in the two frames the viewer loads.** §7.2's `Rx+90`
+puts the sparse cloud back onto the cameras — and it does — but it sends RC's
++Z onto **-Y**, so everything in the RC frame is Y-*down* and three.js draws
+step 3 upside down. LichtFeld Studio then applies its own `Rx+180`,
+`(x, y, z) -> (x, -y, -z)`, when it reads the NeRF transforms, so the trained
+splat comes out Y-up and needs nothing. The viewer therefore rotates **per
+object, not per step** (`viewer/frame.ts`): RC-frame content — the `rc` preview
+*and the camera overlay in all three steps* — is turned 180° around X for
+display; LFS-frame content is not. It is a display transform, nothing on disk
+moves. A "Flip up" toggle turns the whole view over for the scenes where RC's
++Z was never the true vertical to begin with.
 
 ## 8. API
 
@@ -326,6 +339,11 @@ GET    /api/projects                   list
 POST   /api/projects                   create
 GET    /api/projects/{id}              one project
 PATCH  /api/projects/{id}              partial update: deep-merged settings + curation overrides
+DELETE /api/projects/{id}              delete the row, the directory and the archive
+POST   /api/projects/{id}/copy         duplicate under a new name (§14)
+POST   /api/projects/{id}/reset        wipe steps {steps|null=all} — keeps input/
+POST   /api/projects/{id}/archive      zip the directory away, keep the row disabled
+POST   /api/projects/{id}/unarchive    unpack it back
 POST   /api/pipeline/start             start a step
 POST   /api/pipeline/control           pause / resume / abort
 GET    /api/pipeline/status            running state
@@ -428,6 +446,16 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-20 | **Abort kills the tool's process tree; Pause is gone from the exe-driven steps.** `/control abort` cancelled the asyncio task, but every exe step streams stdout from a thread-pool `readline()` and held its `Popen` in a local: the cancellation unwound the coroutine and marked the step aborted while `LichtFeld-Studio.exe` kept training on the GPU, unreferenced, with the reader thread stuck on a pipe that never closed. `core/proc.py` registers every child by project directory and `request_abort` `taskkill /F /T`s the tree — RC and LFS spawn workers, so killing the parent alone orphans the process that actually holds the GPU. Killing it is also what closes the pipe and unblocks the reader. A child killed that way raises `ProcessAborted`, handled like `AnalysisAborted` so the step is `aborted`, not `error`. **Pause was pure theatre** — the event is only awaited between steps and `/start` runs one step per call, so no running step ever observed it; none of FFmpeg, RealityScan or LichtFeld Studio has a pause verb anyway. The button is removed from step 4 rather than left lying; reviving it means suspending the child process (`NtSuspendProcess`) or threading the event into the curation loops, which is a feature, not a wiring fix. |
 | 2026-08-20 | **The 3D viewer is in-app (three.js), and it never loads the step output (§7.3).** The SuperSplat route was dropped: `supersplat_url` points at the *public* editor, `https://superspl.at/editor`, which cannot reach a `localhost` static file — the iframe was not merely untested, it could not work. Against that, the §1 non-goal *"no 3D viewer beyond the existing PLY preview"* buys nothing, since the existing preview was the broken iframe. Two MIT dependencies, both in §10: `three` for the sparse cloud, `@mkkellogg/gaussian-splats-3d` for depth-sorted gaussians — a splat drawn as coloured points is a different picture, not a cheaper one. The size problem is solved in the backend, not the browser: 1.24 GB and 142 MB of ASCII are converted to a 32-byte `.splat` / 16-byte `PC3D` record and decimated by a uniform spread, cached under `projects/<slug>/preview/` and invalidated by source mtime. |
 | 2026-08-20 | **The preview build is a POST that returns immediately, polled through the GET.** Converting five million gaussians is seconds, not milliseconds, and a request held open for the length of it is indistinguishable from a hung app. It is deliberately outside `pipeline_runner`: nothing it runs is an external tool, there is no process to kill, and cancelling it would only leave a `.part` file behind. |
+| 2026-08-21 | **The up-axis fix lives in the viewer, per object, not in `rc_postprocess`.** §7.2's `Rx+90` maps RC's +Z onto -Y: cloud and cameras agree with each other, but the whole RC frame is Y-down and step 3 rendered upside down. Measured on `coutryside_001`, LFS applies `(x, y, z) -> (x, -y, -z)` to the NeRF frame — 95.7 % of the sparse cloud's occupied 2-unit cells land inside the trained splat's under that rotation, 10 % under identity, and no translation or scale — so the splat of steps 4-5 is already Y-up while the overlay built from `transforms.json` was flipped *relative to it*. Correcting `rc_postprocess` instead would only move the problem: LFS would then train Y-down and step 4 would be the broken one. So `viewer/frame.ts` rotates RC-frame objects by `Rx+180` at display time — the `rc` preview and the camera rig everywhere — and leaves the files alone. The "Flip up" toggle covers the alignments where RC's +Z is not the vertical. |
+| 2026-08-21 | **The COLMAP export is RealityScan's own, driven by a generated export-params XML.** RS 2.2 registers the exporter in its `calibration.xml` — format `{280B11A4-F9A3-47D1-AE58-C0DEA33487D8}`, `writer="RealityScan.Export.COLMAP"` — with no `<body>`, because that template is compiled into the writer. So step 3 does not convert anything: `build_rscmd` adds a second `-exportRegistration` pointing at a params XML generated per run from `rc.colmap`, exactly as the `.rscmd` itself is. Three things this settles. **The dataset is written next to `transforms.json`, never instead of it** — the coverage check, `cameras.py` and the preview all read the NeRF export, and LFS prefers COLMAP anyway: `LoaderImpl::canLoad` probes `COLMAP dataset detected` *before* `Blender/NeRF dataset detected`. **`directory_structure: standard` is RC's own wording for `images/` + `sparse/0/`**, which is the layout the LFS loader looks for first, so nothing has to move 3 GB of PNGs. **Undistortion is not a preference**: RC refuses to write a COLMAP camera for its own `division` model and falls back to model id 13, which is not one of COLMAP's twelve — LFS answers `Invalid camera model ID 13 for image`. The real prize is per-image intrinsics: the NeRF loader reads `camera_model`/`fl_x`/`w`/`h` **once, at top level** (`Width/height not in transforms.json, reading from first image`), so §7.2's median hoist was telling 300 differently-cropped images they were the median image — measured on `coutryside_001`, frame 0 is 3793×2835 and frame 1 is 3785×2831. |
+| 2026-08-21 | **The COLMAP scene is exported with `Rotate X = 180`, and that is what keeps the splat upright.** RC's COLMAP template hard-codes `(x, y, z) -> (x, -z, y)`, the same `Rx+90` as `rc_postprocess`, which puts the world Y-down. LFS's *NeRF* loader cancels that with its own `Rx+180` (§7.3); its *COLMAP* loader does not, because COLMAP is already the convention it wants — so an as-exported COLMAP dataset trains a splat 180° around X from today's, upside down in the viewer, in `export/` and in Blender. The dialog's `MvsExportRotationX` composes to `Rx-90` overall, `(x, y, z) -> (x, z, -y)`, and the order RC applies it in does not matter because rotations about one axis commute. Nothing downstream changes — `viewer/frame.ts` included. Exposed as `rc.colmap.scene_rotate_x_deg` rather than hardcoded, for the alignments where RC's +Z was never the vertical. |
+| 2026-08-21 | **The project file operations are modal, and the dialog is mounted by the shell (§14.2).** Copy ran with nothing but a spinner on one tile: the user could start a step, switch project, or leave step 1 entirely — unmounting the list, and with it the only view of a running copy. None of these operations can be interrupted (there is no child process to kill, unlike a pipeline step), so the honest UI blocks. Progress travels on the existing WS bus under the step name `project`, which the store routes to the dialog rather than to `stepProgress`, and `copytree` was replaced by a file-by-file copy for the same reason: it is the only way to report anything before the end. Reporting every 20 files *and* every file over 8 MB, because a project of five 1 GB splats trips neither rule on its own. |
+| 2026-08-21 | **`ui/button.tsx` is wrapped in `forwardRef`, because this app is React 18.** The file was the React 19 flavour of shadcn — a plain function component taking `ref` as a prop — and React 18.3 strips that ref instead. Every `<DropdownMenuTrigger asChild><Button/></DropdownMenuTrigger>` therefore gave Radix no anchor element, and an unanchored Popper never sets `isPositioned`: it parks its content at `translate(0, -200%)`, off the top of the page (`@radix-ui/react-popper`). The menu opened perfectly and was drawn where nobody could see it, so both the project options menu and the WizardShell project picker looked like dead buttons. Any shadcn component pasted from the v4 docs needs the same treatment until React is upgraded. |
+| 2026-08-21 | **A project is copied, reset, archived or deleted from the list, and a reset never touches `input/` (§14).** Re-uploading the source video is the one cost a reset must not have — every other directory is derived and re-derivable. Resetting step N implies every later step, because their outputs were computed from the ones being deleted; `export/` therefore belongs to step 5, and step 6 owns only the two files it adds to it (`scene.blend`, `README_SPLATFORGE.txt`). All four operations refuse while a job is running for the project (`is_running`, exported from the pipeline routes) — the one-job-at-a-time rule is enforced there, so the answer to "is this directory being written to" lives there too. |
+| 2026-08-21 | **Archiving zips the directory away and keeps the row, disabled.** The alternative — a "deleted" project that leaves 4 GB behind — is what the option exists to avoid, and a row that vanishes is indistinguishable from a delete. `projects/_archives/<slug>.zip` is inside `projects/` because it is user data (§3); the underscore cannot collide with a slug, which is `[a-z0-9_-]` stripped of leading underscores. Deflate at `compresslevel=1`: a project is mostly PLY — 142 MB of ASCII cloud, up to 1.24 GB of gaussians (§7.3) — where level 1 gets most of the ratio for a fraction of the time. The zip is written to `.part` and renamed, the directory is removed only after the archive is complete, and the zip is removed only after a restore has unpacked it: at no point is the project's only copy in flight. `preview/` is excluded from both the archive and the copy — it is a cache the viewer rebuilds. An archived project is refused by `/pipeline/start`, `/analyze`, copy and reset, and is filtered out of the two wizard project pickers. |
+| 2026-08-21 | **Two projects no longer share a directory.** `create_project` slugified the name and used the result as-is, so a second project called "test" extracted its frames on top of the first one's. `_unique_slug` suffixes `-2`, `-3`… against both the DB and the disk; copy needs it anyway, and applying it to `create` costs one line. Existing rows keep their slugs. |
+| 2026-08-21 | **The added columns are migrated with one ALTER each, not Alembic.** `SQLModel.metadata.create_all` only creates missing *tables*, so `archived_at` / `archive_path` would be absent from the existing `pipeline.db` and every query on them would fail with "no such column". `_add_missing_columns()` in `db/database.py` compares `PRAGMA table_info` against a declared list and adds what is missing — one user, one file, additive changes only. Anything a plain `ADD COLUMN` cannot express is the day this becomes a real migration tool. |
+| 2026-08-21 | **The project tiles date from UTC explicitly.** The backend serialises naive `datetime.utcnow()` with no offset, and `new Date("…T12:00:00")` reads that as *local* time — on UTC+2 every project was stamped two hours in the future and read "just now" for an hour. The tiles stamp the `Z` back on before parsing, and show the full path, the creation date and the last update. |
 | 2026-08-20 | **`.splat` and `.pc3d` are registered as `application/octet-stream`.** `StaticFiles` serves unknown extensions as `text/plain; charset=utf-8`, which invites anything in the path to treat a binary splat as text. |
 Any new structural decision → add a row here in the same commit.
 
@@ -437,3 +465,67 @@ Any new structural decision → add a row here in the same commit.
 
 Prioritised worklist lives in [TODO.md](TODO.md). This file is the spec; that
 one is what comes next.
+
+---
+
+## 14. Project lifecycle — copy, reset, archive, delete
+
+Four options on each tile of the Projects list (`⋮` menu). All of them are
+refused while that project has a job running, and all of them work on one slug.
+
+**There is one project list, `components/projects/ProjectList.tsx`, and step 1
+renders it** — embedded, without its Card chrome — in both of its modes: under
+the import form when no project is selected, and at the bottom of the source
+manager when one is. `ProjectList` was previously not rendered anywhere at all
+(the step had its own read-only copy), which is the whole reason to keep a
+single component: options added to one list are not options the user can find.
+
+| Option | What it does | What it keeps |
+|---|---|---|
+| **Copy** | Asks for a name, duplicates the directory and the row — wizard position, step statuses and `settings_json` included | everything but `preview/`, which is a cache |
+| **Reset** | Deletes the artefacts of a step and of every step after it, then rewinds `current_step` to just before it | **always `input/`** — the source video is never a casualty of a reset |
+| **Archive** | Zips the directory into `projects/_archives/<slug>.zip`, removes the directory, keeps the row in the list, disabled | the zip, until it is restored or the project is deleted |
+| **Delete** | Removes the row, the directory and the archive | nothing |
+
+### 14.1 What a reset deletes
+
+| Step | Directories | Files |
+|---|---|---|
+| 2 Extract | `frames/`, `analysis/`, `report/` | |
+| 3 RC | `rc_output/` | |
+| 4 LFS | `lfs_output/` | |
+| 5 Export | `export/` | |
+| 6 Blender | | `export/scene.blend`, `export/README_SPLATFORGE.txt` |
+
+Step 1 is deliberately absent: it owns `input/`. Steps 5 and 6 share `export/` —
+5 fills it, 6 adds the Blender scene to it — so resetting 5 necessarily takes 6
+with it, which is exactly what "and everything after" means. `preview/` goes as
+soon as any step from 3 on is reset: it is built from those outputs and would
+otherwise show the previous run's cloud next to an empty directory.
+
+The wizard's own state is rewound with the files: if the project being reset is
+the one open in the wizard, the list re-hydrates it from the response instead of
+leaving it on a step whose output no longer exists.
+
+The file operations live in `backend/core/project_ops.py` — no FastAPI import,
+so they are testable on a temp directory (§2.4).
+
+### 14.2 The operations are modal
+
+All four run behind a blocking dialog (`ProjectOperationDialog`), mounted by
+`WizardShell` and driven from the store — not by the list, which unmounts the
+moment the user changes step and used to take the only sign of progress with it.
+Nothing dismisses the dialog: no Escape, no click-outside, no close button. It
+opens when the request is sent and closes when it returns; on failure it stays
+up holding the error until dismissed.
+
+That is not decoration. A copy moves gigabytes file by file and **there is
+nothing to abort it with** — no child process to kill, unlike a pipeline step
+(§12, 2026-08-20) — so starting a step or another project operation on top of a
+running one is a half-written directory, not a queue.
+
+The bar is fed over the existing WS bus: the operations report under the step
+name `project`, which the store routes to the dialog instead of to
+`stepProgress` (it is not a wizard step). Copy, archive and restore run in a
+worker thread and report every 20 files, plus every file over 8 MB — otherwise a
+project of five 1 GB splats would sit at 0 % until it finished.

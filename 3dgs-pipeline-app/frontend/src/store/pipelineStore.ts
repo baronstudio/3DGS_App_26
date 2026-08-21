@@ -9,6 +9,7 @@ import type {
   ExportFile,
   StepName,
   LogLevel,
+  ProjectOperation,
 } from '../types';
 
 const MAX_LOGS = 500;
@@ -38,11 +39,20 @@ interface PipelineState {
   // Export files
   exportFiles: ExportFile[];
 
+  // Project-level file operation in flight (copy / reset / archive / restore)
+  projectOp: ProjectOperation | null;
+
   // Actions — projects
   setProjects: (projects: Project[]) => void;
   addProject: (project: Project) => void;
+  upsertProject: (project: Project) => void;
   removeProject: (id: string) => void;
   setCurrentProject: (id: string | null) => void;
+
+  // Actions — project operations
+  startProjectOp: (op: { projectId: string; title: string; projectName: string }) => void;
+  failProjectOp: (message: string) => void;
+  endProjectOp: () => void;
 
   // Actions — websocket
   setWsConnected: (connected: boolean) => void;
@@ -100,6 +110,7 @@ export const usePipelineStore = create<PipelineState>()(
     stepProgress: {},
     lfsMetrics: [],
     exportFiles: [],
+    projectOp: null,
 
     // Project actions
     setProjects: (projects) =>
@@ -107,6 +118,15 @@ export const usePipelineStore = create<PipelineState>()(
 
     addProject: (project) =>
       set((state) => { state.projects.push(project); }),
+
+    // Copy / reset / archive all hand back the whole project row, so the list
+    // takes it as-is rather than re-fetching everything for one changed tile.
+    upsertProject: (project) =>
+      set((state) => {
+        const index = state.projects.findIndex((p) => p.id === project.id);
+        if (index === -1) state.projects.push(project);
+        else state.projects[index] = project;
+      }),
 
     removeProject: (id) =>
       set((state) => {
@@ -116,6 +136,27 @@ export const usePipelineStore = create<PipelineState>()(
 
     setCurrentProject: (id) =>
       set((state) => { state.currentProjectId = id; }),
+
+    // Project operation actions. The modal is opened by the request that starts
+    // the work and closed by the one that finishes it; what happens in between
+    // arrives on the WS bus under the step name 'project'.
+    startProjectOp: ({ projectId, title, projectName }) =>
+      set((state) => {
+        state.projectOp = {
+          projectId, title, projectName,
+          progress: 0,
+          message: 'Starting…',
+          error: null,
+        };
+      }),
+
+    failProjectOp: (message) =>
+      set((state) => {
+        if (state.projectOp) state.projectOp.error = message;
+      }),
+
+    endProjectOp: () =>
+      set((state) => { state.projectOp = null; }),
 
     // WebSocket connection status
     setWsConnected: (connected) =>
@@ -210,6 +251,9 @@ export const usePipelineStore = create<PipelineState>()(
       set((state) => {
         switch (msg.type) {
           case 'log': {
+            if (msg.step === 'project' && state.projectOp && msg.message) {
+              state.projectOp.message = msg.message;
+            }
             const entry: LogEntry = {
               id: `log-${++logCounter}`,
               timestamp: msg.timestamp,
@@ -224,6 +268,15 @@ export const usePipelineStore = create<PipelineState>()(
             break;
           }
           case 'progress': {
+            if (msg.step === 'project') {
+              // Not a wizard step: the file operations report here, and only
+              // the modal cares.
+              if (state.projectOp) {
+                if (msg.progress !== undefined) state.projectOp.progress = msg.progress;
+                if (msg.message) state.projectOp.message = msg.message;
+              }
+              break;
+            }
             if (msg.progress !== undefined) {
               state.stepProgress[msg.step] = msg.progress;
               // progress=1.0 means the step runner completed — update status

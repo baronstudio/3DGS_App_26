@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { buildCameraRig, type CameraRig } from './cameraRig';
+import { applyUpFix, UP_FIX_QUATERNION } from './frame';
 import type { CameraPose } from '@/types';
 
 /**
@@ -23,6 +24,10 @@ interface SplatCanvasProps {
   cameras: CameraPose[] | null;
   showCameras: boolean;
   showPath: boolean;
+  /** Draw the splat 180 deg around X — see `frame.ts`. Read once, at load. */
+  flipSplat: boolean;
+  /** Same for the camera overlay; the two frames are not always the same one. */
+  flipCameras: boolean;
   fovX?: number | null;
   aspect?: number | null;
   onLoaded?: () => void;
@@ -54,7 +59,7 @@ function splatBounds(mesh: GaussianSplats3D.SplatMesh) {
 }
 
 export const SplatCanvas: React.FC<SplatCanvasProps> = ({
-  url, background, cameras, showCameras, showPath, fovX, aspect,
+  url, background, cameras, showCameras, showPath, flipSplat, flipCameras, fovX, aspect,
   onLoaded, onProgress, onError,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -93,6 +98,9 @@ export const SplatCanvas: React.FC<SplatCanvasProps> = ({
 
     const load = viewer.addSplatScene(url, {
       format: GaussianSplats3D.SceneFormat.Splat,
+      // A scene transform, not a rewrite of the splats: `getSplatCenter(i, v,
+      // true)` below returns the transformed centres, so the framing follows.
+      rotation: flipSplat ? UP_FIX_QUATERNION : [0, 0, 0, 1],
       showLoadingUI: false,
       progressiveLoad: true,
       onProgress: (percent: number) => onProgress?.(percent),
@@ -156,6 +164,7 @@ export const SplatCanvas: React.FC<SplatCanvasProps> = ({
 
     const rig = buildCameraRig(cameras, { fovX, aspect, showPath });
     if (!rig) return undefined;
+    applyUpFix(rig.group, flipCameras);
     scene.add(rig.group);
     rigRef.current = rig;
 
@@ -166,7 +175,7 @@ export const SplatCanvas: React.FC<SplatCanvasProps> = ({
         rigRef.current = null;
       }
     };
-  }, [cameras, showCameras, showPath, fovX, aspect, url]);
+  }, [cameras, showCameras, showPath, flipCameras, fovX, aspect, url]);
 
   return <div ref={containerRef} className="w-full h-full" />;
 };

@@ -20,6 +20,17 @@ router = APIRouter()
 _running_tasks: dict[str, asyncio.Task] = {}
 
 
+def is_running(project_id: str) -> bool:
+    """True while this project owns a live job.
+
+    Exported because the destructive project operations (copy, reset, archive,
+    delete) must not run under a step that is still writing to the directory —
+    the one-job-at-a-time rule is enforced here, so the answer lives here too.
+    """
+    task = _running_tasks.get(project_id)
+    return task is not None and not task.done()
+
+
 class StartBody(BaseModel):
     project_id: str
     start_from_step: int = 1
@@ -41,6 +52,12 @@ async def start_pipeline(body: StartBody, session: Session = Depends(get_session
     project = session.get(Project, body.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.archived_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is archived — restore it before running a step.",
+        )
 
     if body.project_id in _running_tasks and not _running_tasks[body.project_id].done():
         raise HTTPException(status_code=409, detail="Pipeline already running for this project")
@@ -111,6 +128,12 @@ async def analyze_project(body: AnalyzeBody, session: Session = Depends(get_sess
     project = session.get(Project, body.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.archived_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is archived — restore it before analysing.",
+        )
 
     if body.project_id in _running_tasks and not _running_tasks[body.project_id].done():
         raise HTTPException(status_code=409, detail="A job is already running for this project")

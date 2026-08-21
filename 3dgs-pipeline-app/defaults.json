@@ -25,8 +25,33 @@
         "precision": "Normal",
         "max_features": 60000,
         "keep_largest": true,
-        "merge_components": true,
+        "merge_components": false,
         "normalise_for_lfs": true,
+        "colmap": {
+            "enabled": true,
+            "directory_structure": "standard",
+            "file_type": "binary",
+            "exclude_unreliable_tie_points": true,
+            "export_masks": false,
+            "mask_extension": "mask_ext",
+            "scene_rotate_x_deg": 0.0,
+            "undistort": {
+                "enabled": true,
+                "fit": "inner_region",
+                "resolution": "fit",
+                "custom_width": 0,
+                "custom_height": 0,
+                "downscale": 1,
+                "undistort_principal_point": true,
+                "image_cutout": 1.0,
+                "max_pixels": 0,
+                "export_images": true,
+                "image_format": "png",
+                "pixel_format": "24-bit BGR",
+                "naming_convention": "sequential",
+                "background_color": "#000000"
+            }
+        },
         "extra_align_commands": []
     },
     "lfs": {

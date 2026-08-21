@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Optional
 
 from backend.core.config import app_config
-from backend.core.defaults import RCDefaults, load_defaults
+from backend.core.defaults import RCDefaults, _deep_merge, load_defaults
 from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.steps.rc_export_params import build_colmap_export_params
 from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
     normalise_transforms,
@@ -28,13 +29,20 @@ def resolve_rc_settings(settings: dict) -> RCDefaults:
 
     A project may send the rc block nested or flat; both are accepted, and only
     keys the model knows are taken - a stray UI field must not reach the .rscmd.
+
+    The merge is deep because the colmap block is nested and a project stores
+    only the keys it actually overrides. A flat `{**base, **patch}` would
+    replace that whole sub-dict, resetting its siblings to the *model* defaults
+    rather than the ones in defaults.json - the failure CLAUDE.md 4 forbids by
+    name ("never a full copy of the defaults, or changing a default would stop
+    propagating to existing projects").
     """
     base = load_defaults().rc.model_dump()
     incoming = settings or {}
     nested = incoming.get("rc")
     patch_source = nested if isinstance(nested, dict) else incoming
     patch = {k: v for k, v in patch_source.items() if k in base and v is not None}
-    return RCDefaults.model_validate({**base, **patch})
+    return RCDefaults.model_validate(_deep_merge(base, patch))
 
 
 # -- Generated .rscmd --------------------------------------------------------
@@ -61,8 +69,23 @@ def build_rscmd(frames_dir: Path, rc_output: Path, rc: RCDefaults) -> Path:
     lines += [
         f'-exportRegistration "{rc_output / "transforms.json"}"',
         f'-exportSparsePointCloud "{rc_output / "pointcloud.ply"}"',
-        "-quit",
     ]
+
+    # The COLMAP dataset, written next to the NeRF one rather than instead of
+    # it: the coverage check, the camera overlay and the preview all read
+    # transforms.json, and LichtFeld Studio prefers COLMAP over it unprompted
+    # ("COLMAP dataset detected" is probed before "Blender/NeRF dataset
+    # detected"). With directory_structure "standard" RC writes images/ and
+    # sparse/0/ itself, which is the layout that loader looks for first.
+    if rc.colmap.enabled:
+        params = build_colmap_export_params(
+            rc.colmap, rc_output / "colmap_export_params.xml"
+        )
+        lines.append(
+            f'-exportRegistration "{rc_output / "colmap.txt"}" "{params}"'
+        )
+
+    lines.append("-quit")
     script = rc_output / "align.rscmd"
     script.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return script

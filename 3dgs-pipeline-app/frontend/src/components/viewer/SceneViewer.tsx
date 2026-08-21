@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Boxes, Camera, Download, ExternalLink, RefreshCw, RotateCcw, Route, Maximize2,
-  AlertTriangle,
+  Boxes, Camera, Download, ExternalLink, FlipVertical2, RefreshCw, RotateCcw, Route,
+  Maximize2, AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { staticUrl } from '@/api/client';
 import { useDefaults } from '@/hooks/useDefaults';
 import { useSettings } from '@/hooks/useSettings';
 import { useCameras, usePreview } from '@/hooks/usePreview';
+import { isYDownFrame } from './frame';
 import PointCloudCanvas from './PointCloudCanvas';
 import SplatCanvas from './SplatCanvas';
 import type { PreviewSource } from '@/types';
@@ -59,6 +60,7 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
   const [loadPercent, setLoadPercent] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewNonce, setViewNonce] = useState(0);
+  const [upFlipped, setUpFlipped] = useState(false);
 
   // Hydrate from defaults.json once it lands; the state above is the pre-fetch
   // placeholder, exactly like the Advanced panels do it (CLAUDE.md §4).
@@ -121,6 +123,12 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
   const isSplat = state?.kind === 'splat';
   const building = Boolean(state?.building);
   const canvasKey = `${state?.url ?? 'none'}#${viewNonce}`;
+
+  // The RC export is Y-down and the LFS output is Y-up (frame.ts), so the fix
+  // is per object, not per step. `upFlipped` turns the whole view over on top
+  // of that — RC's +Z is only the true vertical when the alignment found it.
+  const flipContent = isYDownFrame(source) !== upFlipped;
+  const flipCameras = !upFlipped;
 
   if (!state || (!state.available && !error)) {
     return (
@@ -204,6 +212,16 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
         <Button
           variant="ghost"
           size="sm"
+          onClick={() => setUpFlipped((v) => !v)}
+          className={`gap-1 text-xs ${upFlipped ? 'text-cyan-400' : 'text-slate-400 hover:text-slate-100'}`}
+          title="Turn the scene over — RealityScan's up axis is only a guess when the alignment had nothing vertical to lean on"
+        >
+          <FlipVertical2 className="w-3.5 h-3.5" />
+          Flip up
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setViewNonce((n) => n + 1)}
           className="text-slate-400 hover:text-slate-100 gap-1 text-xs"
           title="Reframe the scene"
@@ -262,6 +280,8 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
             cameras={cameraPoses}
             showCameras={showCameras}
             showPath={showPath}
+            flipCloud={flipContent}
+            flipCameras={flipCameras}
             fovX={cameras?.fov_x}
             aspect={cameras?.aspect}
             onProgress={(loaded, total) =>
@@ -272,12 +292,16 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
         )}
         {state.ready && state.url && isSplat && (
           <SplatCanvas
-            key={canvasKey}
+            // The scene rotation is read once, when the splat is added, so a
+            // flip has to remount the canvas — unlike the point cloud.
+            key={`${canvasKey}#${flipContent}`}
             url={state.url}
             background={viewerDefaults?.background ?? '#0b1220'}
             cameras={cameraPoses}
             showCameras={showCameras}
             showPath={showPath}
+            flipSplat={flipContent}
+            flipCameras={flipCameras}
             fovX={cameras?.fov_x}
             aspect={cameras?.aspect}
             onProgress={(percent) => setLoadPercent(percent)}
