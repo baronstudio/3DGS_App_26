@@ -20,6 +20,7 @@ scene while claiming to show the scene.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -310,6 +311,35 @@ def _iter_rows(data: np.ndarray, keep: Optional[np.ndarray], progress: Optional[
 
 # -- Conversion --------------------------------------------------------------
 
+def _finalise(tmp: Path, dst: Path) -> None:
+    """Move the finished `.part` onto its final name.
+
+    Windows refuses to rename onto a handle another process still holds - an
+    antivirus mid-scan, an indexer, a download the browser abandoned - and the
+    answer is `[WinError 5] Access denied`, not a sharing violation. Preview
+    names now carry the source fingerprint (`core/preview.py`) so the target is
+    normally absent, but a couple of retries cover the transient holders, and
+    the `.part` goes rather than sitting in the cache directory forever.
+    """
+    last: Optional[OSError] = None
+    for delay in (0.0, 0.2, 0.5):
+        if delay:
+            time.sleep(delay)
+        try:
+            tmp.replace(dst)
+            return
+        except PermissionError as exc:
+            last = exc
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
+    raise PlyError(
+        f"{dst.name}: another process is holding the previous preview open "
+        f"({last})"
+    )
+
+
 def convert_ply(
     src: Path, dst: Path, max_count: Optional[int] = None,
     progress: Optional[ProgressFn] = None,
@@ -327,7 +357,7 @@ def convert_ply(
     else:
         written = _write_cloud(src, tmp, header, keep, progress)
 
-    tmp.replace(dst)
+    _finalise(tmp, dst)
     if progress:
         progress(1.0)
     return {
@@ -438,7 +468,7 @@ def convert_splat_file(
                 written += len(rows)
     finally:
         del data
-    tmp.replace(dst)
+    _finalise(tmp, dst)
     if progress:
         progress(1.0)
     return {

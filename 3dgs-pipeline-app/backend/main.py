@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api import websocket
+from backend.api import file_handles, websocket
 from backend.api.routes import defaults, files, pipeline, projects, settings
 from backend.core.pipeline_runner import reconcile_orphaned_steps
 from backend.db.database import create_db_and_tables
@@ -56,6 +56,9 @@ app.include_router(websocket.router)
 mimetypes.add_type("application/octet-stream", ".splat")
 mimetypes.add_type("application/octet-stream", ".pc3d")
 mimetypes.add_type("application/octet-stream", ".ply")
+
+# A cancelled download must not leave the file open - see the module.
+file_handles.apply_sync_close()
 
 app.mount("/static", StaticFiles(directory=str(PROJECTS_DIR)), name="static")
 

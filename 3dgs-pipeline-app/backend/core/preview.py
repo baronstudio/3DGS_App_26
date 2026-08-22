@@ -13,7 +13,9 @@ it is already showing.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -83,9 +85,56 @@ def _level_tag(max_count: Optional[int]) -> str:
     return "full" if not max_count or max_count <= 0 else str(int(max_count))
 
 
-def _target(project_path: Path, source: str, kind: str, max_count: Optional[int]) -> Path:
+def _fingerprint(src: Path) -> str:
+    """Eight hex digits standing for *this* revision of the source file."""
+    stat = src.stat()
+    seed = f"{src.name}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8")
+    return hashlib.blake2b(seed, digest_size=4).hexdigest()
+
+
+def _target(project_path: Path, source: str, kind: str, max_count: Optional[int],
+            fingerprint: str) -> Path:
+    """Where the preview for one revision of one source, at one level, lives.
+
+    The fingerprint is in the *name* on purpose. A rebuild used to write over
+    the previous file, and on Windows that is a rename onto a handle somebody
+    else still holds: the viewer aborts its download whenever the level changes
+    or the canvas unmounts, and a cancelled `FileResponse` leaks the open file
+    (its `aclose()` is a thread call, and a cancelled task never reaches it) -
+    so `os.replace` came back `[WinError 5] Access denied` and the preview was
+    stuck until the server restarted. A new revision now writes a new name;
+    the stale one is pruned if the OS lets go of it, and costs 16 MB if not.
+    It also gives the browser a URL it cannot serve a previous cloud from.
+    """
     suffix = ".splat" if kind == ply.KIND_SPLAT else ".pc3d"
-    return project_path / PREVIEW_DIRNAME / f"{source}_{_level_tag(max_count)}{suffix}"
+    name = f"{source}_{_level_tag(max_count)}_{fingerprint}{suffix}"
+    return project_path / PREVIEW_DIRNAME / name
+
+
+def _prune_siblings(target: Path, source: str, max_count: Optional[int]) -> None:
+    """Drop the previews of earlier revisions at the same (source, level).
+
+    Best effort: a file another process still holds open cannot be unlinked on
+    Windows, and that must not fail a build that has already succeeded.
+    """
+    keep = {target.name, _stamp_path(target).name}
+    prefix = f"{source}_{_level_tag(max_count)}"
+    directory = target.parent
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for path in entries:
+        name = path.name
+        if name in keep or not path.is_file():
+            continue
+        # `<prefix>_<fingerprint>.<ext>` today, `<prefix>.<ext>` before it.
+        if not (name.startswith(prefix + "_") or name.startswith(prefix + ".")):
+            continue
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _stamp_path(target: Path) -> Path:
@@ -147,7 +196,8 @@ def status(project_path: Path, slug: str, source: str,
         return base
 
     base.update(kind=described["kind"], total=described["total"])
-    target = _target(project_path, source, described["kind"], max_count)
+    target = _target(project_path, source, described["kind"], max_count,
+                     _fingerprint(src))
     if _is_fresh(target, src):
         stamp = _read_stamp(target) or {}
         base.update(
@@ -168,7 +218,8 @@ def build(project_path: Path, slug: str, source: str, max_count: Optional[int],
         raise PreviewError(f"No {source} output to preview yet.")
 
     described = ply.describe(src)
-    target = _target(project_path, source, described["kind"], max_count)
+    target = _target(project_path, source, described["kind"], max_count,
+                     _fingerprint(src))
     if _is_fresh(target, src):
         return status(project_path, slug, source, max_count)
 
@@ -188,6 +239,7 @@ def build(project_path: Path, slug: str, source: str, max_count: Optional[int],
         }, indent=2),
         encoding="utf-8",
     )
+    _prune_siblings(target, source, max_count)
     return status(project_path, slug, source, max_count)
 
 
