@@ -8,6 +8,7 @@
         "target_frame_count": 300,
         "mpdecimate": false,
         "quality": 2,
+        "scale_percent": 100,
         "max_frames": 0
     },
     "curate": {
@@ -34,7 +35,7 @@
             "exclude_unreliable_tie_points": true,
             "export_masks": false,
             "mask_extension": "mask_ext",
-            "scene_rotate_x_deg": 0.0,
+            "scene_rotate_x_deg": 180.0,
             "undistort": {
                 "enabled": true,
                 "fit": "inner_region",

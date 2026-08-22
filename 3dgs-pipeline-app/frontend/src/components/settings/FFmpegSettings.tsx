@@ -21,6 +21,8 @@ interface FFmpegSettingsProps {
   onChange: (s: ExtractDefaults) => void;
   /** Resolved working fps for this project's source, from /api/defaults/fps-preview. */
   fpsExplanation?: string;
+  /** Source resolution, when a probe is available — turns the % into pixels. */
+  sourceSize?: { width: number | null; height: number | null } | null;
 }
 
 const FFmpegSettings: React.FC<FFmpegSettingsProps> = ({
@@ -28,12 +30,25 @@ const FFmpegSettings: React.FC<FFmpegSettingsProps> = ({
   presets,
   onChange,
   fpsExplanation,
+  sourceSize,
 }) => {
   const update = <K extends keyof ExtractDefaults>(key: K, value: ExtractDefaults[K]) => {
     onChange({ ...settings, [key]: value });
   };
 
   const activePreset = presets.find((p) => p.id === settings.capture_preset);
+
+  // Mirrors build_scale_filter() in step_extract.py: both sides truncated to an
+  // even number, because the mjpeg encoder writes yuvj420p.
+  const scaledSize = (): string | null => {
+    const { width, height } = sourceSize ?? {};
+    if (!width || !height) return null;
+    const f = settings.scale_percent / 100;
+    const even = (v: number) => Math.floor(v * f / 2) * 2;
+    return settings.scale_percent >= 100
+      ? `${width}x${height}`
+      : `${width}x${height} → ${even(width)}x${even(height)}`;
+  };
 
   return (
     <div className="space-y-6">
@@ -161,12 +176,24 @@ const FFmpegSettings: React.FC<FFmpegSettingsProps> = ({
 
       <Separator className="bg-slate-700/50" />
 
-      {/* JPEG quality */}
+      {/* JPEG quality — compression, not resolution */}
       <div className="space-y-2">
         <div className="flex justify-between items-center">
-          <Label>Quality (lower = better)</Label>
+          <div className="flex items-center gap-1.5">
+            <Label>JPEG compression quality (lower = better)</Label>
+            <span
+              title="FFmpeg -qscale:v, the mjpeg quantiser. It trades file weight against blocking artefacts and leaves the pixel dimensions untouched — use Output resolution below to make the frames smaller. Above 3, compression artefacts start costing RealityScan features and read as sharpness to the blur filter."
+              className="text-slate-500 hover:text-slate-300 cursor-help"
+            >
+              <Info className="h-3.5 w-3.5" />
+            </span>
+          </div>
           <span className="text-sm text-cyan-400 font-mono">{settings.quality}</span>
         </div>
+        <p className="text-xs text-slate-500">
+          FFmpeg <code className="text-slate-400">-qscale:v</code> — file weight only, the
+          frames keep their full pixel size
+        </p>
         <Slider
           min={1}
           max={5}
@@ -175,9 +202,51 @@ const FFmpegSettings: React.FC<FFmpegSettingsProps> = ({
           onValueChange={([v]) => update('quality', v)}
         />
         <div className="flex justify-between text-xs text-slate-500">
-          <span>1 (best)</span>
-          <span>5 (worst)</span>
+          <span>1 (best, biggest files)</span>
+          <span>5 (worst, smallest files)</span>
         </div>
+      </div>
+
+      <Separator className="bg-slate-700/50" />
+
+      {/* Output resolution */}
+      <div className="space-y-2">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center gap-1.5">
+            <Label>Output resolution</Label>
+            <span
+              title="Downscales every extracted frame by this percentage of the source (FFmpeg scale, applied after the fps gate). 100% writes the source resolution. Worth dropping on 4K+ sources: RealityScan aligns faster and LichtFeld Studio trains on what these frames hold."
+              className="text-slate-500 hover:text-slate-300 cursor-help"
+            >
+              <Info className="h-3.5 w-3.5" />
+            </span>
+          </div>
+          <span className="text-sm text-cyan-400 font-mono">
+            {settings.scale_percent >= 100 ? 'Source' : `${settings.scale_percent} %`}
+          </span>
+        </div>
+        <Slider
+          min={10}
+          max={100}
+          step={5}
+          value={[settings.scale_percent]}
+          onValueChange={([v]) => update('scale_percent', v)}
+        />
+        <div className="flex justify-between text-xs text-slate-500">
+          <span>10 %</span>
+          <span>100 % = no downscale</span>
+        </div>
+        {scaledSize() && (
+          <p className="text-xs text-cyan-400 font-mono bg-slate-950 border border-slate-800 rounded px-2 py-1.5">
+            {scaledSize()}
+          </p>
+        )}
+        {settings.scale_percent <= 50 && (
+          <p className="flex items-center gap-1 text-xs text-amber-400">
+            <TriangleAlert className="h-3.5 w-3.5" />
+            below ~50% the frames start losing the detail alignment keys on
+          </p>
+        )}
       </div>
 
       <Separator className="bg-slate-700/50" />

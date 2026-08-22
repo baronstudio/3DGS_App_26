@@ -60,7 +60,7 @@ const Step2_Extract: React.FC = () => {
   const { defaults, presets, previewFps } = useDefaults();
   const {
     frames, summary, analysis, analysed, loading,
-    reanalyse, setOverride, refresh, error: curationError,
+    reanalyse, setOverride, refresh, clear, error: curationError,
   } = useCuration(currentProjectId);
 
   const [showSettings, setShowSettings] = useState(false);
@@ -69,7 +69,9 @@ const Step2_Extract: React.FC = () => {
   // Per-project working copies, seeded from the app defaults (CLAUDE.md §4).
   const [extract, setExtract] = useState<ExtractDefaults | null>(null);
   const [curate, setCurate] = useState<CurateDefaults | null>(null);
-  const [probe, setProbe] = useState<{ fps: number | null; duration_s: number | null } | null>(null);
+  const [probe, setProbe] = useState<
+    { fps: number | null; duration_s: number | null; width: number | null; height: number | null } | null
+  >(null);
   const [fpsExplanation, setFpsExplanation] = useState<string>('');
 
   const status = stepStatuses[2];  // step 2 = extract + curate
@@ -108,6 +110,10 @@ const Step2_Extract: React.FC = () => {
   const handleExtract = async () => {
     if (!currentProjectId || !extract) return;
     setError(null);
+    // The step wipes frames/ and analysis/ before FFmpeg runs, so the gallery
+    // and the curation stats go with them — showing the previous set while the
+    // new one extracts is showing frames that are already deleted.
+    clear();
     try {
       await startPipeline(currentProjectId, 2, jobSettings());
     } catch (err: unknown) {
@@ -198,6 +204,7 @@ const Step2_Extract: React.FC = () => {
             presets={presets}
             onChange={setExtract}
             fpsExplanation={fpsExplanation}
+            sourceSize={probe}
           />
         </div>
       )}

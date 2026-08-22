@@ -105,7 +105,11 @@ class ExtractDefaults(BaseModel):
     # non-deterministically, which breaks the frame-index ↔ timecode mapping that
     # scene detection and the timeline rely on. See CLAUDE.md §6.1.
     mpdecimate: bool = False
+    # -qscale:v, the mjpeg quantiser: compression only, never pixel dimensions.
     quality: int = 2
+    # Percentage of the source resolution written to disk. 100 adds no scale
+    # filter at all, so the default extraction is bit-for-bit what it was.
+    scale_percent: int = Field(default=100, ge=10, le=100)
     max_frames: int = 0
 
 

@@ -1,38 +1,70 @@
-"""The export-params XML handed to RealityScan's `-exportRegistration`.
+r"""The export-params XML handed to RealityScan's `-exportRegistration`.
 
-`-exportRegistration <file> <config file>` takes an XML describing *which*
-exporter to run and with which parameters. RealityScan 2.2 already registers
-the one we want, in its own `calibration.xml` next to `RealityScan.exe`:
+`-exportRegistration <file> <config file>` takes a *settings* file, the one the
+Export Registration dialog writes — not a format definition. The two look
+nothing alike, and confusing them is what made RealityScan answer
+
+    Loading of the configuration from the file 'colmap_export_params.xml'
+    failed. [err:5617]
+
+and then hold the whole batch open on a modal, so the step never returned.
+
+A **format definition** lives in `calibration.xml` next to `RealityScan.exe`
+and declares which writer produces which file type. RealityScan 2.2 already
+registers the one we want:
 
     <format id="{280B11A4-F9A3-47D1-AE58-C0DEA33487D8}" mask="*.txt"
             descID="9001" desc="COLMAP"
             writer="RealityScan.Export.COLMAP"
             undistortImages="1" exportImages="1" requires="component"/>
 
-The element carries no `<body>`: unlike the CSV/Bundler formats, the COLMAP
-template is compiled into the writer. So this module does not describe the
-output — it only sets the writer's parameters, whose names are the ones
-RealityScan itself uses (`colmapDirStructure`, `colmapFileType`,
-`colmapPointFiltering`, `colmapExportMasks`, `colmapMaskExtension`, and the
-`undist*` family shared with every other undistorting exporter).
+A **settings file** is what the CLI reads, and its shape is the one every
+RealityScan tool that can save its settings uses — see the three files shipped
+under `Settings/SimplifiedExport/` (`simplify.xml`, `smooth.xml`,
+`reprojectTexture.xml`, matching exactly the three commands the help documents
+as "you can export these settings from the tool"):
+
+    <Configuration id="{GUID}">
+      <entry key="variable" value="…"/>
+    </Configuration>
+
+`Configuration\entry` is also the only XPath-shaped literal in the executable.
+Measured against RealityScan 2.2 with a probe batch: the `<format>` shape fails
+to load (err:5617); this one loads and proceeds to the export itself.
+
+The `id` is the format GUID. It is not checked when the configuration is read —
+a wrong GUID and no GUID at all both load — but it is the only thing that can
+say *which* exporter to run: `calibration.xml` gives the `*.txt` mask to both
+COLMAP and Boujou, so the output path cannot disambiguate them.
+
+The keys are RealityScan's own, recovered from the executable's string table
+where they sit together under a `CalibrationExportSettings\` prefix: `colmap*`
+for the format's own options, `exportUndistorted` / `undist*` for the
+undistortion block shared with every undistorting exporter, and `MvsExport*`
+for the scene transformation. **Values are not validated when the file is
+loaded** — a misspelt enum token is ignored rather than refused, so a wrong one
+shows up as an output that does not match the request (ASCII instead of binary,
+one resolution for every image instead of per-image) and never as an error.
+`verify_against_saved_params()` at the bottom is how to settle them against a
+file saved from the dialog.
 
 Two things are not preferences and are documented here rather than in the UI:
 
-* **Undistortion cannot be turned off for COLMAP.** RC refuses its own
+* **Undistortion cannot be turned off for COLMAP.** RS refuses its own
   `division` distortion model — *"COLMAP does not support the distortion model
   'division' used during alignment. Export with respect to undistorted images
   instead."* — and the camera-model id it would otherwise emit is 13, which is
   not one of COLMAP's twelve. LichtFeld Studio answers that with
   `Invalid camera model ID 13 for image '…'`.
-* **The exported world is Y-down.** RC's COLMAP template rotates the scene by
+* **The exported world is Y-down.** RS's COLMAP template rotates the scene by
   `(x, y, z) -> (x, -z, y)`, the same `Rx+90` as `rc_postprocess`, which sends
-  RC's +Z onto -Y. LFS's *NeRF* loader compensates with its own `Rx+180`; its
+  RS's +Z onto -Y. LFS's *NeRF* loader compensates with its own `Rx+180`; its
   *COLMAP* loader does not, because COLMAP is already the convention it wants.
   So a COLMAP dataset exported as-is trains a splat 180 deg around X away from
   the one `transforms.json` produces today — upside down in the viewer, in
-  `export/` and in Blender. `scene_rotate_x` is what puts it back, and it is
-  set from `rc.colmap.scene_rotate_x_deg` rather than hardcoded because which
-  way is up also depends on the shoot (CLAUDE.md 7.3, "Flip up").
+  `export/` and in Blender. `scene_rotate_x_deg` is what puts it back, and it
+  is a setting rather than a constant because which way is up also depends on
+  the shoot (CLAUDE.md 7.3, "Flip up").
 
 Pure module: no FastAPI, no broadcast.
 """
@@ -50,36 +82,30 @@ COLMAP_WRITER = "RealityScan.Export.COLMAP"
 
 # RealityScan's own tokens, recovered from the executable's string table.
 # Only one member of each family appears there literally, so the others are
-# the obvious counterparts and are the first thing to check if RC rejects the
-# file — see `verify_against_saved_params()` at the bottom.
+# the obvious counterparts and are the first thing to check when the export
+# comes out unlike what was asked for — see `verify_against_saved_params()`.
 _DIR_STRUCTURE = {"standard": "CDS_STANDARD", "flat": "CDS_FLAT"}
 _FILE_TYPE = {"binary": "CFT_BIN", "ascii": "CFT_TXT"}
 _MASK_EXTENSION = {"ext": "CME_EXT", "mask_ext": "CME_MASK_EXT"}
-_FIT_MODE = {
-    "outer_boundary": "UFM_OUTER",
-    "inner_region": "UFM_INNER",
-    "in_between": "UFM_BETWEEN",
-}
-_RESOLUTION_MODE = {
-    "preserve": "URM_PRESERVE",
-    "custom": "URM_CUSTOM",
-    "fit": "URM_FIT",
-}
+# No UFM_/URM_ tokens exist in the string table, unlike the colmap* families:
+# these two are plain combo-box indices, in the order the dialog lists them.
+_FIT_MODE = {"outer_boundary": 0, "inner_region": 1, "in_between": 2}
+_RESOLUTION_MODE = {"preserve": 0, "custom": 1, "fit": 2}
 _NAMING = {"sequential": "00000", "original": "$(imageName)"}
 
 
 def _bool(value: bool) -> str:
-    """RC writes its booleans as 1/0 in the format attributes, so match that."""
+    """RealityScan writes its booleans as 1/0, so match that."""
     return "1" if value else "0"
 
 
 def _undistort_params(u: UndistortDefaults) -> dict[str, str]:
     return {
-        "undistortImages": _bool(u.enabled),
+        "exportUndistorted": _bool(u.enabled),
         "exportImages": _bool(u.export_images),
-        "undistortPrincipal": _bool(u.undistort_principal_point),
-        "undistFitMode": _FIT_MODE[u.fit],
-        "undistResMode": _RESOLUTION_MODE[u.resolution],
+        "undistPrincipalMode": _bool(u.undistort_principal_point),
+        "undistFitMode": str(_FIT_MODE[u.fit]),
+        "undistResMode": str(_RESOLUTION_MODE[u.resolution]),
         "undistortCustomWidth": str(u.custom_width),
         "undistortCustomHeight": str(u.custom_height),
         "undistortDownscaleFactor": str(u.downscale),
@@ -132,17 +158,9 @@ def build_colmap_export_params(colmap: ColmapExportDefaults, dest: Path) -> Path
     (CLAUDE.md 12): the parameters are user-facing, and a static file would
     have to be hand-edited to change any of them.
     """
-    root = ET.Element(
-        "format",
-        {
-            "id": COLMAP_FORMAT_ID,
-            "writer": COLMAP_WRITER,
-            "mask": "*.txt",
-            "requires": "component",
-        },
-    )
+    root = ET.Element("Configuration", {"id": COLMAP_FORMAT_ID})
     for name, value in _colmap_params(colmap).items():
-        ET.SubElement(root, "parameter", {"variable": name, "value": value})
+        ET.SubElement(root, "entry", {"key": name, "value": value})
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     ET.indent(root, space="  ")
@@ -153,14 +171,16 @@ def build_colmap_export_params(colmap: ColmapExportDefaults, dest: Path) -> Path
 
 
 def verify_against_saved_params(saved: Path) -> dict:
-    """Compare our parameter names against an XML saved from RC's export dialog.
+    """Compare our parameter names against an XML saved from RS's export dialog.
 
     The dialog can write its own settings out, and that file is the only
-    authority on the spelling of the enum tokens: RealityScan's string table
-    contains `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` but not their
-    counterparts, so `CDS_FLAT`, `CFT_BIN` and `CME_MASK_EXT` above are
-    inferred. Point this at a saved file to find out which of them are wrong
-    before a real run does it the expensive way.
+    authority on the enum tokens: RealityScan's string table contains
+    `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` but not their counterparts, so
+    `CDS_FLAT`, `CFT_BIN` and `CME_MASK_EXT` above are inferred, and the two
+    undistortion modes are emitted as combo indices. Loading the file does not
+    validate any of them (a bad value is ignored, not refused), so a wrong one
+    is only visible in the output. Point this at a saved file to find out which
+    of them are wrong before a real run does it the expensive way.
 
     Returns {"unknown": [...], "missing": [...], "values": {...}} — parameters
     the saved file has and we do not, ones we emit and it does not, and the
@@ -169,9 +189,11 @@ def verify_against_saved_params(saved: Path) -> dict:
     tree = ET.parse(saved)
     found: dict[str, str] = {}
     for node in tree.iter():
-        variable = node.get("variable") or node.get("name")
-        if variable:
-            found[variable] = node.get("value") or (node.text or "").strip()
+        # `key` is the settings-file spelling, `variable` the one a format
+        # definition uses for the same parameter; accept either.
+        name = node.get("key") or node.get("variable") or node.get("name")
+        if name:
+            found[name] = node.get("value") or (node.text or "").strip()
 
     ours = set(_colmap_params(ColmapExportDefaults()))
     return {

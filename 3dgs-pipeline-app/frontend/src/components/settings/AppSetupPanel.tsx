@@ -55,12 +55,14 @@ const NumField: React.FC<{
   onChange: (v: number) => void;
   step?: number;
   min?: number;
+  max?: number;
   disabled?: boolean;
-}> = ({ value, onChange, step = 1, min, disabled }) => (
+}> = ({ value, onChange, step = 1, min, max, disabled }) => (
   <Input
     type="number"
     step={step}
     min={min}
+    max={max}
     value={value}
     disabled={disabled}
     onChange={(e) => {
@@ -382,12 +384,37 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   </div>
                 </Row>
 
-                <Row label="JPEG quality" hint="FFmpeg -qscale:v — 1 is best, 5 is worst.">
+                <Row
+                  label="JPEG compression quality"
+                  hint="FFmpeg -qscale:v — 1 is best, 5 is worst. Compression only: it changes the file weight and the artefacts, never the pixel dimensions."
+                >
                   <NumField
                     value={draft.extract.quality}
                     min={1}
+                    max={31}
                     onChange={(v) => patch('extract', 'quality', v)}
                   />
+                </Row>
+
+                <Row
+                  label="Output resolution (% of source)"
+                  hint="Downscales every extracted frame (FFmpeg scale, after the fps gate). 100 writes the source resolution; both sides are truncated to an even number for the mjpeg encoder."
+                >
+                  <div className="flex items-center gap-2">
+                    <NumField
+                      value={draft.extract.scale_percent}
+                      min={10}
+                      max={100}
+                      step={5}
+                      onChange={(v) => patch('extract', 'scale_percent', v)}
+                    />
+                    {draft.extract.scale_percent <= 50 && (
+                      <span className="flex items-center gap-1 text-xs text-amber-400">
+                        <TriangleAlert className="w-3.5 h-3.5" />
+                        alignment detail
+                      </span>
+                    )}
+                  </div>
                 </Row>
 
                 <Row label="Max frames" hint="0 = unlimited.">

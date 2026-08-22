@@ -61,9 +61,15 @@ def save_config(cfg) -> None:
 
 
 def reload_config() -> AppConfig:
-    """Reload config from disk and update the module-level singleton."""
-    global app_config
-    app_config = load_config()
+    """Reload config from disk into the existing singleton, in place.
+
+    Mutated rather than rebound: every step does `from ...config import
+    app_config`, which binds the object at import time. Rebinding the module
+    global would leave all of them holding the *previous* config, so a tool path
+    corrected in the Setup panel would not reach the steps until a restart —
+    which is indistinguishable from the fix not working.
+    """
+    app_config.tools = load_config().tools
     return app_config
 
 

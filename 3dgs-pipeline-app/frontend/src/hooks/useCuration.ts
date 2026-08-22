@@ -73,6 +73,23 @@ export const useCuration = (projectId: string | null) => {
     };
   }, [step2Running, projectId, refresh]);
 
+  /**
+   * Drop everything the previous run produced, without waiting for the server.
+   *
+   * A re-extraction deletes `frames/` and `analysis/` before FFmpeg writes the
+   * first frame (`step_extract._clear_previous_run`), so the gallery and the
+   * stats on screen describe a frame set that no longer exists. They are
+   * emptied on the click rather than on the first poll, which is up to two
+   * seconds later.
+   */
+  const clear = useCallback(() => {
+    setFrames([]);
+    setSummary(null);
+    setAnalysis(null);
+    setAnalysed(false);
+    setError(null);
+  }, []);
+
   /** Re-run the curation on the frames already on disk. */
   const reanalyse = useCallback(
     async (settings: Partial<ExtractDefaults> & Record<string, unknown> = {}) => {
@@ -119,7 +136,7 @@ export const useCuration = (projectId: string | null) => {
 
   return {
     frames, summary, analysis, analysed, loading, error,
-    refresh, reanalyse, setOverride,
+    refresh, reanalyse, setOverride, clear,
   };
 };
 

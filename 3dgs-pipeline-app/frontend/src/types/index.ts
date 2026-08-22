@@ -128,7 +128,10 @@ export interface ExtractDefaults {
   fps_absolute: number;
   target_frame_count: number;
   mpdecimate: boolean;
+  /** FFmpeg -qscale:v — JPEG compression, 1 (best) to 5. Not a resolution. */
   quality: number;
+  /** Percentage of the source resolution written to disk. 100 = no downscale. */
+  scale_percent: number;
   max_frames: number;
 }
 

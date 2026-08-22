@@ -1,7 +1,7 @@
 {
     "rc_exe_path": "C:\\Program Files\\Epic Games\\RealityScan_2.2\\RealityScan.exe",
     "lfs_exe_path": "C:\\Program Files\\LichtFeld-Studio-windows-v0.5.3\\bin\\LichtFeld-Studio.exe",
-    "ffmpeg_path": "G:\\travail\\DEV\\3DGS_App_26\\3dgs-pipeline-app\\tools\\ffmpeg\\bin\\ffmpeg.exe",
+    "ffmpeg_path": "C:\\Users\\jbbar\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.exe",
     "blender_exe_path": "C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe",
     "supersplat_url": "https://superspl.at/editor"
 }

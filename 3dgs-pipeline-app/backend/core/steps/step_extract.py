@@ -1,12 +1,14 @@
 import asyncio
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 from backend.core.config import app_config
 from backend.core.defaults import ExtractDefaults, load_defaults, resolve_extract_fps
 from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.project_ops import reset_steps
 from backend.core.probe import probe_video
 
 
@@ -25,6 +27,48 @@ def resolve_extract_settings(settings: dict) -> ExtractDefaults:
         patch["fps_absolute"] = float(settings["fps"])
 
     return ExtractDefaults.model_validate({**base, **patch})
+
+
+def resolve_ffmpeg_path(configured: str) -> tuple[str, str | None]:
+    """The ffmpeg binary to actually run, plus a note when it is not the configured one.
+
+    `probe.py` already falls back to a bare `ffprobe` on PATH when the binary
+    next to the configured ffmpeg is missing, so a stale `ffmpeg_path` let the
+    probe succeed and killed the step later — on a `Popen` raising WinError 2
+    with no filename in the message, i.e. an instant failure with no output at
+    all. Both ends resolve the same way now, and a genuinely absent ffmpeg
+    fails with the path it looked for (CLAUDE.md §2).
+    """
+    if configured and Path(configured).exists():
+        return configured, None
+
+    found = shutil.which("ffmpeg")
+    if found:
+        note = (
+            f"ffmpeg_path points at a file that does not exist ({configured}) — "
+            f"falling back to the ffmpeg on PATH: {found}. "
+            "Fix the path in Settings → Tools."
+        ) if configured else None
+        return found, note
+
+    raise FileNotFoundError(
+        f"ffmpeg.exe not found at: {configured or '(not configured)'}\n"
+        "No ffmpeg on PATH either. Install FFmpeg and set ffmpeg_path in Settings."
+    )
+
+
+def build_scale_filter(scale_percent: int) -> str | None:
+    """The FFmpeg `scale` clause for a percentage of the source resolution.
+
+    Returns None at 100 %, so the untouched extraction adds no filter at all.
+    Both dimensions are truncated to an even number: the mjpeg encoder writes
+    yuvj420p, whose chroma planes are half-size, and an odd side makes it fail
+    outright rather than round for us.
+    """
+    if scale_percent >= 100:
+        return None
+    f = scale_percent / 100.0
+    return f"scale=trunc(iw*{f:.4f}/2)*2:trunc(ih*{f:.4f}/2)*2"
 
 
 def _write_extract_meta(
@@ -51,6 +95,7 @@ def _write_extract_meta(
             "input_video": str(input_video) if input_video else None,
             "mpdecimate": extract.mpdecimate,
             "quality": extract.quality,
+            "scale_percent": extract.scale_percent,
             "max_frames": extract.max_frames,
             "capture_preset": extract.capture_preset,
             "frame_count": frame_count,
@@ -59,22 +104,51 @@ def _write_extract_meta(
     )
 
 
+async def _clear_previous_run(project_path: Path, broadcast_fn) -> None:
+    """Wipe what the previous extraction left, before writing the new one.
+
+    FFmpeg overwrites `frame_%04d.jpg` in place, so a second run at a lower fps
+    kept the tail of the first one — 300 frames extracted over 500 leaves 200
+    orphans that no `scores.json` describes and that the gallery still shows.
+    The curation JSON is just as stale: `selection.json` and `scores.json` point
+    at frame indices that changed meaning, and `overrides.json` — which is
+    otherwise never regenerated (§5) — would apply a manual keep/drop to a
+    different picture.
+
+    This is exactly a reset of step 2 (§14.1), so it is the same call: the frame
+    set, the analysis and the report go, `input/` never does.
+    """
+    removed = reset_steps(project_path, [2])
+    if removed:
+        await broadcast_fn(
+            "extract", "INFO",
+            f"[extract] Cleared the previous run: {', '.join(removed)}",
+            progress=0.0,
+        )
+
+
 async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
     """FFmpeg frame extraction from the first .mp4/.mov in project_path/input/."""
-    frames_dir = project_path / "frames"
-    frames_dir.mkdir(exist_ok=True)
-
     input_dir = project_path / "input"
     video_files = list(input_dir.glob("*.mp4")) + list(input_dir.glob("*.mov"))
     if not video_files:
         raise FileNotFoundError(f"No .mp4 or .mov found in {input_dir}")
     input_video = video_files[0]
 
+    # Only once the source is known to exist: a missing video must not cost the
+    # frames already on disk.
+    await _clear_previous_run(project_path, broadcast_fn)
+
+    frames_dir = project_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
     extract = resolve_extract_settings(settings)
     quality = extract.quality
     max_frames = extract.max_frames
 
-    ffmpeg_path = app_config.tools.ffmpeg_path or "ffmpeg"
+    ffmpeg_path, ffmpeg_note = resolve_ffmpeg_path(app_config.tools.ffmpeg_path)
+    if ffmpeg_note:
+        await broadcast_fn("extract", "WARNING", f"[FFmpeg] {ffmpeg_note}")
     loop = asyncio.get_running_loop()
 
     # Probe first: the `auto` fps mode needs the real duration and cadence.
@@ -110,6 +184,24 @@ async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
             "extract", "WARNING",
             "mpdecimate is ON — frame indices will not map to timecodes, "
             "which degrades scene detection and the overlap gate.",
+        )
+
+    # Last in the chain on purpose: scaling after the fps gate resizes only the
+    # frames that survive it, not every frame of the source.
+    scale_clause = build_scale_filter(extract.scale_percent)
+    if scale_clause:
+        vf_filter += f",{scale_clause}"
+        src_w, src_h = probe.get("width"), probe.get("height")
+        target = ""
+        if src_w and src_h:
+            f = extract.scale_percent / 100.0
+            target = (
+                f" — {src_w}x{src_h} -> "
+                f"{int(src_w * f) // 2 * 2}x{int(src_h * f) // 2 * 2}"
+            )
+        await broadcast_fn(
+            "extract", "INFO",
+            f"[scale] frames written at {extract.scale_percent}% of the source{target}",
         )
 
     cmd = [
