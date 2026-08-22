@@ -5,8 +5,6 @@ import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
-import { StubToggle } from './StubToggle';
-import { useSettings } from '@/hooks/useSettings';
 import type { RCSettingsType } from '@/types';
 
 interface RCSettingsProps {
@@ -21,20 +19,8 @@ const PRECISION_OPTIONS: Array<{ value: RCSettingsType['precision']; label: stri
 ];
 
 const RCSettings: React.FC<RCSettingsProps> = ({ settings, onChange }) => {
-  const { updateSettings } = useSettings();
-
   const update = <K extends keyof RCSettingsType>(key: K, value: RCSettingsType[K]) => {
     onChange({ ...settings, [key]: value });
-  };
-
-  const handleStubChange = (enabled: boolean) => {
-    update('stub_enabled', enabled);
-    updateSettings({ stubs: { rc_stub: enabled } as never });
-  };
-
-  const handleStubDurationChange = (duration: number) => {
-    update('stub_duration', duration);
-    updateSettings({ stubs: { rc_stub_duration_seconds: duration } as never });
   };
 
   return (
@@ -128,15 +114,6 @@ const RCSettings: React.FC<RCSettingsProps> = ({ settings, onChange }) => {
         />
         <p className="text-xs text-slate-500">Optional — leave empty to use default</p>
       </div>
-
-      {/* DEV stub section */}
-      <StubToggle
-        tool="RealityCapture"
-        enabled={settings.stub_enabled}
-        onChange={handleStubChange}
-        durationSeconds={settings.stub_duration}
-        onDurationChange={handleStubDurationChange}
-      />
     </div>
   );
 };

@@ -37,9 +37,7 @@ Implement the last two sections of the Admin UI:
       "description": "Video frame extraction",
       "help_url": "https://ffmpeg.org/ffmpeg.html",
       "flags_file": "backend/admin/flags/ffmpeg_flags.json",
-      "wizard_step": 2,
-      "stub_available": true,
-      "stub_enabled": false
+      "wizard_step": 2
     },
     {
       "id": "rc",
@@ -49,9 +47,7 @@ Implement the last two sections of the Admin UI:
       "description": "Camera alignment via photogrammetry",
       "help_url": "https://rshelp.capturingreality.com/en-US/appbasics/allcommands.htm",
       "flags_file": "backend/admin/flags/rc_flags.json",
-      "wizard_step": 3,
-      "stub_available": true,
-      "stub_enabled": true
+      "wizard_step": 3
     },
     {
       "id": "lfs",
@@ -61,9 +57,7 @@ Implement the last two sections of the Admin UI:
       "description": "3DGS training",
       "help_url": "https://github.com/MrNeRF/LichtFeld-Studio/wiki",
       "flags_file": "backend/admin/flags/lfs_flags.json",
-      "wizard_step": 4,
-      "stub_available": true,
-      "stub_enabled": true
+      "wizard_step": 4
     }
   ]
 }
@@ -122,11 +116,11 @@ async def validate_tool(tool_id: str):
 │  │  Path: ffmpeg (in PATH)            [Edit]   │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
-│  │  📷  RealityCapture        builtin  ⚠️ Stub  │   │
+│  │  📷  RealityCapture        builtin  ● OK     │   │
 │  │  Path: C:/Program Files/...         [Edit]   │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
-│  │  ✨  LichtFeld Studio      builtin  ⚠️ Stub  │   │
+│  │  ✨  LichtFeld Studio      builtin  ❌ Not set│   │
 │  │  Path: not configured               [Edit]   │   │
 │  └──────────────────────────────────────────────┘   │
 │                                                     │
@@ -342,7 +336,7 @@ async saveWizardSteps() {
 ## ACCEPTANCE CRITERIA
 
 After this step:
-- Tools list shows all 3 builtin tools with their status (OK / Stub / Not configured)
+- Tools list shows all 3 builtin tools with their status (OK / Not configured)
 - "Check" button validates the exe path and shows result inline
 - Add Tool modal saves a new tool to `config.json`
 - Builtin tools show edit (exe path only) but no delete button

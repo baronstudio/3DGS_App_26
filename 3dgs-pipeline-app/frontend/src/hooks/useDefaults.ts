@@ -5,7 +5,7 @@ import type { AppDefaults, CapturePreset, DefaultsSection, ExtractDefaults } fro
  * Business defaults per wizard step (defaults.json).
  *
  * Distinct from useSettings, which owns config.json — installation concerns
- * (exe paths, stub flags). See CLAUDE.md §4 for the three-layer model.
+ * (exe paths). See CLAUDE.md §4 for the three-layer model.
  */
 export const useDefaults = () => {
   const [defaults, setDefaults] = useState<AppDefaults | null>(null);

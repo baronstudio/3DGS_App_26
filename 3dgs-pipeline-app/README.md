@@ -53,29 +53,3 @@ You must build LichtFeld Studio manually after it has been cloned into the `tool
 
 If you generate a Blender scene, you can use the [SplatForge](https://github.com/ymgenesis/SplatForge-for-Blender) addon for advanced editing and relighting. The generated `.blend` file is pre-configured to work with it.
 
-## Development Without Hardware (Stub Mode)
-
-By default, RealityCapture and LichtFeld Studio run in **stub/simulation mode**.
-This means the full wizard pipeline can be tested without:
-- An NVIDIA GPU
-- RealityCapture installed
-- LichtFeld Studio compiled from source
-
-### What stubs do
-- Stream realistic progressive log messages (same format as real tools)
-- Generate valid output files (registration CSV, sparse PLY, trained PLY)
-- Simulate realistic timing (8s for RC alignment, 15s for LFS training by default)
-- Feed live metrics to the frontend charts (loss, PSNR, Gaussian count)
-
-### How to disable stubs (production mode)
-1. Build LichtFeld Studio: https://github.com/MrNeRF/LichtFeld-Studio/wiki
-2. Install RealityCapture via Epic Games Launcher
-3. Open the app → Settings → set exe paths
-4. Toggle OFF "Stub Mode" in the RC and LFS advanced settings
-5. Re-run the pipeline — real tools will be called
-
-### Adjusting stub duration
-In Settings > Advanced > DEV section:
-- RC simulation: 3–60 seconds (default: 8s)
-- LFS simulation: 3–60 seconds (default: 15s)
-

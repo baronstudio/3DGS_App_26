@@ -5,8 +5,6 @@ import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
 import { Info } from 'lucide-react';
-import { StubToggle } from './StubToggle';
-import { useSettings } from '@/hooks/useSettings';
 import type { LFSSettingsType } from '@/types';
 
 interface LFSSettingsProps {
@@ -40,20 +38,8 @@ const STRATEGIES: { value: LFSSettingsType['strategy']; label: string; hint: str
 ];
 
 const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
-  const { updateSettings } = useSettings();
-
   const update = <K extends keyof LFSSettingsType>(key: K, value: LFSSettingsType[K]) => {
     onChange({ ...settings, [key]: value });
-  };
-
-  const handleStubChange = (enabled: boolean) => {
-    update('stub_enabled', enabled);
-    updateSettings({ stubs: { lfs_stub: enabled } as never });
-  };
-
-  const handleStubDurationChange = (duration: number) => {
-    update('stub_duration', duration);
-    updateSettings({ stubs: { lfs_stub_duration_seconds: duration } as never });
   };
 
   return (
@@ -152,15 +138,6 @@ const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
           <span className="text-sm text-cyan-400 font-mono">{settings.background_color}</span>
         </div>
       </div>
-
-      {/* DEV stub section */}
-      <StubToggle
-        tool="LichtFeld Studio"
-        enabled={settings.stub_enabled}
-        onChange={handleStubChange}
-        durationSeconds={settings.stub_duration}
-        onDurationChange={handleStubDurationChange}
-      />
     </div>
   );
 };

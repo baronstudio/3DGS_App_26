@@ -70,15 +70,6 @@ cd frontend && npm install
   `Get-NetTCPConnection -LocalPort 8000,5173 -State Listen | Select-Object LocalPort,OwningProcess`
   then `Stop-Process -Id <pid>`.
 
-## Stub mode
-
-`3dgs-pipeline-app/config.json` controls whether the heavy external tools really run:
-
-- `rc_stub`, `lfs_stub`, `ffmpeg_stub`, `blender_stub` - `true` simulates the step (streams realistic logs, writes valid dummy outputs) so the whole wizard can be exercised with no GPU, no RealityCapture, no compiled LichtFeld Studio.
-- `rc_stub_duration_seconds` / `lfs_stub_duration_seconds` / `lfs_stub_iterations` tune how long the simulation takes.
-
-In the current checkout only `blender_stub` is `true`; RC, LFS and FFmpeg point at real executables. **When testing UI/pipeline flow rather than actual reconstruction quality, flip `rc_stub` and `lfs_stub` to `true` first** - a real run takes minutes and needs the GPU. Toggles are also exposed in the app under Settings > Advanced > DEV.
-
 ## Build / lint (frontend)
 
 ```powershell

@@ -38,8 +38,8 @@ def load_grey(path: Path, max_dim: int = MAX_DIM) -> np.ndarray:
 def tenengrad(grey: np.ndarray) -> float:
     """Mean squared Sobel gradient magnitude. Higher = sharper."""
     if grey.size == 0 or min(grey.shape[:2]) < 3:
-        # Degenerate frame (the ffmpeg stub emits 1x1 JPEGs) — score it 0 rather
-        # than raising, so a stub run still produces a complete scores.json.
+        # Degenerate frame (a truncated or 1x1 JPEG) — score it 0 rather than
+        # raising, so one bad file still leaves a complete scores.json.
         return 0.0
     gx = cv2.Sobel(grey, cv2.CV_64F, 1, 0, ksize=3)
     gy = cv2.Sobel(grey, cv2.CV_64F, 0, 1, ksize=3)

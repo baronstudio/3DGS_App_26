@@ -178,7 +178,7 @@ const SECTIONS: { id: SectionId; label: string; icon: React.ElementType }[] = [
   { id: 'export', label: 'Export', icon: PackageOpen },
   { id: 'blender', label: 'Blender', icon: Boxes },
   { id: 'viewer', label: '3D viewer', icon: Orbit },
-  { id: 'tools', label: 'Tools & stubs', icon: FolderCog },
+  { id: 'tools', label: 'Tools', icon: FolderCog },
 ];
 
 interface AppSetupPanelProps {
@@ -971,23 +971,6 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                     }
                   />
                 </Row>
-
-                <div className="pt-4">
-                  <p className="text-xs uppercase tracking-wide text-slate-500 mb-1">Stub mode</p>
-                  <p className="text-xs text-slate-500 mb-2">
-                    Replaces a tool with a simulation so the pipeline runs without it.
-                  </p>
-                </div>
-                {(['ffmpeg_stub', 'rc_stub', 'lfs_stub', 'blender_stub'] as const).map((key) => (
-                  <Row key={key} label={key.replace('_stub', '').toUpperCase()}>
-                    <Switch
-                      checked={settings.stubs[key]}
-                      onCheckedChange={(v) =>
-                        updateSettings({ stubs: { ...settings.stubs, [key]: v } })
-                      }
-                    />
-                  </Row>
-                ))}
               </div>
             )}
           </div>

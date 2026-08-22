@@ -17,8 +17,8 @@ import type { PreviewSource } from '@/types';
  * The 3D preview mounted in steps 3, 4 and 5.
  *
  * It picks the renderer from what the file *is*, not from which step asked:
- * the RC stub writes a gaussian PLY where the real RC writes a sparse cloud,
- * so keying the viewer on the step would show the wrong thing in stub mode.
+ * a step can produce either a plain sparse cloud or a gaussian PLY, so keying
+ * the viewer on the step number would sometimes pick the wrong renderer.
  */
 
 interface SceneViewerProps {

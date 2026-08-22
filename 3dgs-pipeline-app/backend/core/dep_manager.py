@@ -79,7 +79,7 @@ def auto_detect_ffmpeg() -> Optional[str]:
 
 
 def get_tool_status() -> list[dict]:
-    """Return a list of tool status dicts with id, name, found, path, stub_active."""
+    """Return a list of tool status dicts with id, name, found, path."""
     cfg = load_config()
 
     ffmpeg_found, ffmpeg_path = _ffmpeg_found(cfg)
@@ -93,27 +93,23 @@ def get_tool_status() -> list[dict]:
             "name":        "FFmpeg",
             "found":       ffmpeg_found,
             "path":        ffmpeg_path,
-            "stub_active": cfg.stubs.ffmpeg_stub,
         },
         {
             "id":          "rc",
             "name":        "RealityCapture",
             "found":       rc_found,
             "path":        rc_path,
-            "stub_active": cfg.stubs.rc_stub,
         },
         {
             "id":          "lfs",
             "name":        "LichtFeld Studio",
             "found":       lfs_found,
             "path":        lfs_path,
-            "stub_active": cfg.stubs.lfs_stub,
         },
         {
             "id":          "blender",
             "name":        "Blender",
             "found":       blender_found,
             "path":        blender_path,
-            "stub_active": cfg.stubs.blender_stub,
         },
     ]

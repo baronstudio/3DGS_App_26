@@ -9,16 +9,6 @@ interface AppConfig {
     blender_exe_path: string | null;
     supersplat_url: string;
   };
-  stubs: {
-    ffmpeg_stub: boolean;
-    rc_stub: boolean;
-    lfs_stub: boolean;
-    blender_stub: boolean;
-    rc_stub_duration_seconds: number;
-    lfs_stub_duration_seconds: number;
-    lfs_stub_iterations: number;
-    lfs_stub_fake_ply: boolean;
-  };
 }
 
 export const useSettings = () => {

@@ -225,7 +225,7 @@ async def preview_status(
     """State of one viewer preview: what the step produced and what is cached.
 
     Cheap enough to poll — it reads the PLY header, never the body, so it costs
-    the same in front of a 1.24 GB splat as in front of the stub's 500 points.
+    the same in front of a 1.24 GB splat as in front of a small sparse cloud.
     """
     slug = get_slug_from_id(project_id, session)
     source, max_count = _preview_query(source, max_count)

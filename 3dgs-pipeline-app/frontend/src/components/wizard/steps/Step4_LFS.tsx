@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, AlertTriangle, Square, CheckCircle } from 'lucide-react';
+import { Settings, Square, CheckCircle } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -11,7 +11,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
-import { useSettings } from '@/hooks/useSettings';
 import { ProgressBar } from '@/components/panels/ProgressBar';
 import SceneViewer from '@/components/viewer/SceneViewer';
 import LFSSettings from '@/components/settings/LFSSettings';
@@ -23,15 +22,12 @@ const DEFAULT_LFS: LFSSettingsType = {
   eval: false,
   save_eval_images: false,
   background_color: '#000000',
-  stub_enabled: false,
-  stub_duration: 10,
 };
 
 const Step4_LFS: React.FC = () => {
   const { currentProjectId, stepStatuses, lfsMetrics, pipelineRunning, setCurrentStep } =
     usePipelineStore();
   const { startPipeline, controlPipeline } = usePipeline();
-  const { settings } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lfsSettings, setLfsSettings] = useState<LFSSettingsType>(DEFAULT_LFS);
@@ -39,7 +35,6 @@ const Step4_LFS: React.FC = () => {
   const status = stepStatuses[4];  // step 4 = lfs
   const isRunning = status === 'running';
   const isDone = status === 'done';
-  const isStub = settings?.stubs?.lfs_stub ?? false;
 
   const lastMetric = lfsMetrics[lfsMetrics.length - 1];
   const gaussianCount = lastMetric?.num_gaussians ?? null;
@@ -49,8 +44,7 @@ const Step4_LFS: React.FC = () => {
     setError(null);
     try {
       // The Advanced panel is the per-project override layer (CLAUDE.md §4);
-      // sending {} here made every knob in it decorative. stub_enabled and
-      // stub_duration belong to config.json and are written by the panel itself.
+      // sending {} here made every knob in it decorative.
       const { iterations, strategy, eval: evalMode,
         save_eval_images, background_color } = lfsSettings;
       await startPipeline(currentProjectId, 4, {
@@ -77,13 +71,6 @@ const Step4_LFS: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
       <h2 className="text-xl font-semibold text-slate-100">Step 4 — LichtFeld Studio Training</h2>
-
-      {isStub && (
-        <div className="flex items-center gap-2 rounded-md bg-orange-950/40 border border-orange-700 px-4 py-2 text-orange-300 text-sm">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          STUB MODE — LFS simulated
-        </div>
-      )}
 
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3">
         <span className="text-sm text-slate-400">3D Gaussian Splatting training</span>

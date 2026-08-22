@@ -27,9 +27,6 @@ imgui.ini
 # LichtFeld ships a 105 MB slang-llvm.dll — over GitHub's hard 100 MB limit.
 # Bootstrapped by setup.py; see the decisions log in CLAUDE.md.
 3dgs-pipeline-app/tools/*
-# ...except the stub assets: rc_stub / lfs_stub read them, so stub mode
-# (core principle #2) must survive a fresh clone.
-!3dgs-pipeline-app/tools/test_assets/
 
 # Editor / local
 *.bak

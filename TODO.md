@@ -20,7 +20,7 @@ projects/<slug>/rc_output/
 │   ├── cameras.{bin|txt}   # intrinsics
 │   ├── images.{bin|txt}    # extrinsics, one entry per registered camera
 │   └── points3D.{bin|txt}  # the sparse cloud — LFS uses it to seed the gaussians
-├── transforms.json         # kept: still what the stub writes and a useful fallback
+├── transforms.json         # kept: the coverage check and the viewer read it
 ├── pointcloud.ply
 └── alignment_check.json
 ```
@@ -52,22 +52,19 @@ splat stays the way up it is today.
   `<format><parameter variable= value=>` wrapper. Save the settings out of RC's
   export dialog once and run `rc_export_params.verify_against_saved_params()`
   against it; that one file settles all of it.
-- **Stub mode does not produce a `sparse/0/`.** The stub emulates RC's *result*,
-  and RC is what writes the COLMAP files here, so there is nothing to reuse.
-  Either the stub writes a small COLMAP set of its own, or step 4 keeps falling
-  back to `transforms.json` when stubbed — decide once the real path is proven.
 - **Step 4 does not say which dataset it trained on.** LFS switches from NeRF to
   COLMAP silently; until it is logged, a half-written `sparse/0/` is invisible.
 
 **Acceptance:**
-- Real RC run and stub run both produce `sparse/0/` and pass a re-import check.
+- A real RC run produces `sparse/0/` and passes a re-import check.
 - The converter is covered by the round-trip test above.
 - Only frames present in the exported registration are written — the split
   reported by `alignment_check.json` must not reappear as broken camera entries.
 - Step 4 trains from the COLMAP dataset with no change to its CLI flags.
 
-**Open question for JB:** keep `transforms.json` as well (cheap, and the stub
-already writes it), or drop it once COLMAP works? Default: keep both.
+**Open question for JB:** keep `transforms.json` as well (cheap, and the
+coverage check, `cameras.py` and the viewer all read it), or drop it once COLMAP
+works? Default: keep both.
 
 ---
 
@@ -87,7 +84,8 @@ What the investigation actually found:
   decision was never "three.js or iframe" but "where does the file get made
   small" — and the answer is the backend (`core/ply.py`, ~1.7 s for the whole
   1.24 GB).
-- **The RC *stub* writes a gaussian PLY as `rc_output/pointcloud.ply`**, so the
+- **A step's output is not always the kind its number suggests** (the RC stub,
+  removed 2026-08-22, wrote a gaussian PLY as `rc_output/pointcloud.ply`), so the
   renderer is chosen from the file's own properties, not from the step number.
 
 Delivered: `core/ply.py`, `core/preview.py`, `core/cameras.py`, the three

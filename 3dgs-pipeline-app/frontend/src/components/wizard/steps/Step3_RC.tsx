@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Settings, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Settings, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import client from '@/api/client';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
-import { useSettings } from '@/hooks/useSettings';
 import { useDefaults } from '@/hooks/useDefaults';
 import { ProgressBar } from '@/components/panels/ProgressBar';
 import SceneViewer from '@/components/viewer/SceneViewer';
@@ -16,11 +15,9 @@ const DEFAULT_RC: RCSettingsType = {
   max_features: 60000,
   keep_largest: true,
   merge_components: true,
-  stub_enabled: false,
-  stub_duration: 10,
 };
 
-/** Cameras / points from the RC log — both the real and the stub wording. */
+/** Cameras / points from the RC log. */
 function parseRCStats(logs: { message: string; level: string }[]): { cameras: number | null; points: number | null } {
   const PATTERNS = [
     /Aligned\s+(\d+)\s+cameras?,\s+([\d,]+)\s+points?/i,
@@ -43,7 +40,6 @@ function parseRCStats(logs: { message: string; level: string }[]): { cameras: nu
 const Step3_RC: React.FC = () => {
   const { currentProjectId, stepStatuses, logs, setCurrentStep } = usePipelineStore();
   const { startPipeline } = usePipeline();
-  const { settings } = useSettings();
   const { defaults } = useDefaults();
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +49,6 @@ const Step3_RC: React.FC = () => {
   const status = stepStatuses[3];  // step 3 = rc
   const isRunning = status === 'running';
   const isDone = status === 'done';
-  const isStub = settings?.stubs?.rc_stub ?? false;
 
   const rcLogs = logs.filter((l) => l.step === 'rc');
   const { cameras, points } = parseRCStats(rcLogs);
@@ -101,13 +96,6 @@ const Step3_RC: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
       <h2 className="text-xl font-semibold text-slate-100">Step 3 — RealityCapture Alignment</h2>
-
-      {isStub && (
-        <div className="flex items-center gap-2 rounded-md bg-orange-950/40 border border-orange-700 px-4 py-2 text-orange-300 text-sm">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          STUB MODE — RC simulated
-        </div>
-      )}
 
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3">
         <span className="text-sm text-slate-400">RealityCapture alignment &amp; sparse reconstruction</span>

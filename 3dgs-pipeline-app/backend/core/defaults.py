@@ -3,7 +3,7 @@ defaults.py — business defaults per wizard step, persisted in defaults.json.
 
 Layer 2 of the three-layer settings model (CLAUDE.md §4):
 
-    config.json           → installation: exe paths, stub flags   (core/config.py)
+    config.json           → installation: exe paths, URLs         (core/config.py)
     defaults.json         → business defaults per step            ← this module
     Project.settings_json → per-project overrides, always win
 

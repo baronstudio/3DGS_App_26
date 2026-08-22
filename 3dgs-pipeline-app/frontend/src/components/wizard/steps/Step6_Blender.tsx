@@ -21,9 +21,7 @@ const Step6_Blender: React.FC = () => {
   const isRunning = status === 'running';
   const isDone = status === 'done';
 
-  const isStub = settings?.stubs?.blender_stub ?? false;
   const blenderPath = settings?.tools?.blender_exe_path ?? null;
-  const isAvailable = blenderPath || isStub;
 
   const blendFile = exportFiles.find((f) => f.filename === BLEND_FILENAME);
   const readmeFile = exportFiles.find((f) => f.filename === README_FILENAME);
@@ -48,7 +46,7 @@ const Step6_Blender: React.FC = () => {
     }
   };
 
-  if (!isAvailable) {
+  if (!blenderPath) {
     return (
       <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
         <h2 className="text-xl font-semibold text-slate-100">Step 6 — Blender Scene (Optional)</h2>
@@ -63,13 +61,6 @@ const Step6_Blender: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
       <h2 className="text-xl font-semibold text-slate-100">Step 6 — Blender Scene (Optional)</h2>
-
-      {isStub && (
-        <div className="flex items-center gap-2 rounded-md bg-orange-950/40 border border-orange-700 px-4 py-2 text-orange-300 text-sm">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          STUB MODE — Blender simulated
-        </div>
-      )}
 
       {blenderPath && (
         <div className="text-xs text-slate-500 truncate">

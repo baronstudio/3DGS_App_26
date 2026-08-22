@@ -97,16 +97,6 @@ def create_config_file():
             "ffmpeg_path": "ffmpeg",
             "blender_exe_path": None,
             "supersplat_url": "https://superspl.at/editor"
-        },
-        "stubs": {
-            "ffmpeg_stub": False,
-            "rc_stub": True,
-            "lfs_stub": True,
-            "blender_stub": True,
-            "rc_stub_duration_seconds": 8.0,
-            "lfs_stub_duration_seconds": 15.0,
-            "lfs_stub_iterations": 30000,
-            "lfs_stub_fake_ply": True
         }
     }
 
@@ -115,7 +105,7 @@ def create_config_file():
         rc_path = find_executable("RealityScan.exe", ["C:/Program Files/Epic Games"])
         config["tools"]["rc_exe_path"] = rc_path
         if not rc_path:
-            print("Warning: RealityScan.exe not found. Stub mode will be used. You can specify the path manually in config.json.")
+            print("Warning: RealityScan.exe not found. You can specify the path manually in config.json.")
     
     # Placeholder for LichtFeld Studio (user needs to build it)
     print("Info: Path to LichtFeld-Studio.exe must be set manually in config.json after building.")
@@ -143,27 +133,6 @@ def create_config_file():
         json.dump(config, f, indent=4)
     print("config.json created. Please review and complete the paths.")
 
-def generate_stub_assets():
-    """Generates stub assets for testing."""
-    print("Generating stub assets...")
-    
-    # Run the PLY generator script
-    script_path = "tools/test_assets/generate_sample_ply.py"
-    if not Path(script_path).exists():
-        print(f"Warning: {script_path} not found. Skipping stub asset generation.")
-        return
-        
-    python_exe = sys.executable
-    subprocess.run([python_exe, script_path], check=True)
-
-    # Copy sample.ply to stub_pointcloud.ply
-    sample_ply = Path("tools/test_assets/sample.ply")
-    stub_pointcloud_ply = Path("tools/test_assets/stub_pointcloud.ply")
-    if sample_ply.exists():
-        import shutil
-        shutil.copy(sample_ply, stub_pointcloud_ply)
-        print(f"Copied {sample_ply} to {stub_pointcloud_ply}")
-
 def main():
     """Main setup script execution."""
     check_python_version()
@@ -172,7 +141,6 @@ def main():
     install_frontend_dependencies()
     clone_repositories()
     create_config_file()
-    generate_stub_assets()
     print("\nSetup complete! To start the application, run: start.bat (Windows) or ./start.sh (Linux/macOS)")
 
 if __name__ == "__main__":

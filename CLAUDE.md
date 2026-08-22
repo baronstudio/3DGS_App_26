@@ -39,9 +39,10 @@ See §6 and the decisions log (§12).
 
 1. **No superfluous dependencies.** Every new dependency is justified and added to
    the licence audit table (§10) in the same commit.
-2. **Stub-driven development.** Each external tool has its own stub flag in
-   `config.json` (`ffmpeg_stub`, `rc_stub`, `lfs_stub`, `blender_stub`) so the UI
-   and pipeline are testable without GPU or installed tools.
+2. ~~**Stub-driven development.**~~ **Dropped 2026-08-22** (§12): every step calls
+   its real tool. There is no simulation layer, no `*_stub` flag and no fake
+   output — a missing or misconfigured `.exe` fails the step with the path it
+   looked for.
 3. **`projects/` is sacred.** `3dgs-pipeline-app/projects/` holds all user data and
    must NEVER be touched by a clean or reset script.
 4. **Pipeline steps are pure-ish.** Modules under `backend/core/steps/` and
@@ -60,7 +61,7 @@ See §6 and the decisions log (§12).
 |---|---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn | `backend/main.py`, `.venv` at app root |
 | Persistence | SQLite + SQLModel (`pipeline.db`) for projects | **JSON files** for per-frame data (§5) |
-| App config | `config.json` — tool paths + stub flags | Route `/api/settings` |
+| App config | `config.json` — tool paths | Route `/api/settings` |
 | App defaults | `defaults.json` — per-step business defaults | Route `/api/defaults` (§4) |
 | Realtime | **WebSocket** `/ws/logs` (`backend/api/websocket.py`) | SSE from the FrameGate spec is dropped — the WS bus is already wired end to end |
 | Video | FFmpeg + ffprobe (system exe, subprocess) | Path in `config.json` |
@@ -79,7 +80,7 @@ Three distinct things, three homes. Do not merge them.
 
 | Layer | File / store | Contents | UI |
 |---|---|---|---|
-| **Installation** | `config.json` | `.exe` paths, URLs, stub flags | Setup panel → "Tools & stubs" |
+| **Installation** | `config.json` | `.exe` paths, URLs | Setup panel → "Tools" |
 | **Defaults** | `defaults.json` | Business defaults per wizard step (fps policy, curation thresholds, RC precision, LFS iterations…) + capture presets + the 3D viewer (§7.3) | Setup panel → one section per step |
 | **Per project** | `Project.settings_json` (SQLite) | What the user changed for THIS project | Wizard step "Advanced" panels |
 
@@ -95,7 +96,7 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
 
 ```
 3dgs-pipeline-app/
-├── config.json                 # installation (paths, stubs)
+├── config.json                 # installation (exe paths, URLs)
 ├── defaults.json               # business defaults + capture presets
 ├── pipeline.db                 # SQLite: project registry only
 ├── backend/
@@ -276,9 +277,6 @@ off around X from the cameras that produced it: a scene standing upright next
 to a flat camera path in the LFS viewer, and Gaussians initialised in the wrong
 frame.
 
-The stub is exempt: it emulates RC's *result*, not RC's exporters, and already
-writes the post-RC shape.
-
 
 ### 7.3 The 3D viewer (steps 3, 4 and 5)
 
@@ -302,8 +300,8 @@ a decimated binary copy into `projects/<slug>/preview/`, served by the existing
 Three consequences worth keeping:
 
 - **The renderer is chosen from what the file *is*, not from which step asked.**
-  The RC *stub* writes a gaussian PLY as `rc_output/pointcloud.ply`, so keying
-  the viewer on the step number shows the wrong renderer in stub mode.
+  A step's output is not guaranteed to be the kind its number suggests, so
+  keying the viewer on the step number can pick the wrong renderer.
 - **Decimation is a uniform spread, never a head slice.** A PLY is not
   shuffled; the first million points of an RC cloud are one corner of the scene.
   The level is a UI control (`viewer.preview_max_points`, default 1 M) and
@@ -437,11 +435,11 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-20 | **The `.rscmd` is generated per run from the settings**, not shipped as a static file. `-mergeComponents` is absent from some RealityScan builds and an unknown verb makes RC exit non-zero, so the merge has to be switchable from the UI; `rc.extra_align_commands` is the escape hatch for verbs the app does not model. |
 | 2026-08-20 | **The coverage check matches cameras by name, then by position.** `-exportRegistration` to a NeRF `transforms.json` does not keep the input filenames: RC writes undistorted copies renamed `00000.png`, `00001.png`… so a fully aligned project matched zero names and was reported as `0/300 · 0%`. When *no* name matches at all, the export was renamed rather than emptied — fall back to export order, which is the sorted input order. A renamed *and* short export reports the count only (`matched_by: "count"`), since which frames were dropped is genuinely unreadable from it. |
 | 2026-08-20 | **`asyncio.CancelledError` is caught by name in the runner.** `/control abort` cancels the task outright, and `CancelledError` derives from `BaseException` — an `except Exception` never saw it, so an aborted step stayed "running" in the UI until a page reload. `StepStatus` gains `aborted`. |
-| 2026-08-20 | **Step 3 rewrites RC's export before step 4 reads it (§7.2).** RC's two exporters disagree with each other and with the LFS loader: `-exportRegistration` writes `camera_model: SIMPLE_RADIAL` with the intrinsics *inside each frame*, and `-exportSparsePointCloud` writes the cloud in RC's own Z-up frame while the registration is NeRF Y-up. LFS v0.5.3 then falls back to *equirectangular*, refuses to train — **and still exits 0**, so the step reported success over an empty `lfs_output/`. `rc_postprocess.py` hoists median PINHOLE intrinsics to the top level, relativises the image paths, and rotates the cloud by `Rx+90`, `(x, y, z) -> (x, -z, y)`. Switchable via `rc.normalise_for_lfs`; the stub is exempt because it writes the post-RC state directly, not RC's exporters. |
+| 2026-08-20 | **Step 3 rewrites RC's export before step 4 reads it (§7.2).** RC's two exporters disagree with each other and with the LFS loader: `-exportRegistration` writes `camera_model: SIMPLE_RADIAL` with the intrinsics *inside each frame*, and `-exportSparsePointCloud` writes the cloud in RC's own Z-up frame while the registration is NeRF Y-up. LFS v0.5.3 then falls back to *equirectangular*, refuses to train — **and still exits 0**, so the step reported success over an empty `lfs_output/`. `rc_postprocess.py` hoists median PINHOLE intrinsics to the top level, relativises the image paths, and rotates the cloud by `Rx+90`, `(x, y, z) -> (x, -z, y)`. Switchable via `rc.normalise_for_lfs`. |
 | 2026-08-20 | **A zero exit code from LichtFeld Studio is not success.** v0.5.3 catches its own training exceptions, logs `Training error: …` and exits 0. `step_lfs.py` now fails on that line *and* on an output directory with no `.ply`/`.splat` in it. The `cudaEventDestroy failed: driver shutting down` storm that follows every exit is CUDA teardown noise and is explicitly **not** treated as fatal — it is the visible symptom, never the cause. |
 | 2026-08-20 | **The LFS CLI is read from the installed build, not remembered.** v0.5.3 renamed the strategies (`mcmc`, `mrnf`, `igs+`, default MRNF), prints progress as a `
 `-redrawn bar rather than `iter n/N`, and colours everything with ANSI SGR codes. The runner splits on CR as well as LF, strips the escapes, and maps `[error]`/`[warn]` onto LiveLog levels. `lr`, `save_interval` and `render_mode` were **removed** from `LFSDefaults`, `defaults.json` and both settings panels: v0.5.3 has no CLI verb for any of them, so the controls round-tripped through `Project.settings_json` and were then silently dropped by the command builder. Upstream they live in `eval/*_optimization_params.json` (`means_lr`, `shs_lr`, `opacity_lr`, `scaling_lr`, `rotation_lr`, `save_steps` as a *list of steps*, not an interval) and are reachable only through `--config <file.json>`; `render_mode` is a rasteriser/viewer concern with no training meaning. Writing that config file is a feature, not a field — if it lands, it lands as its own panel. |
-| 2026-08-20 | **Build artefacts and vendored binaries are untracked.** `node_modules/`, `.venv/`, `__pycache__/` and `tools/` were committed by the initial import — 27 393 tracked files, of which 27 096 were artefacts, so every commit carried Vite-cache and `.pyc` churn. They are now gitignored and removed from the index (files kept on disk). Two exceptions stay tracked: `tools/test_assets/` (read by `rc_stub` / `lfs_stub` — stub mode must survive a fresh clone, core principle #2) and the `tools/supersplat` gitlink. **A fresh clone therefore has no `tools/ffmpeg/` and no `tools/lichtfeld-studio-bin/`**: `setup.py` clones LichtFeld Studio from source and auto-detects FFmpeg on `PATH`, and the prebuilt binaries are re-downloaded by hand. That is the cost of not pushing ~1 GB of `.exe` to GitHub — where `slang-llvm.dll` (105 MB) would be rejected outright. |
+| 2026-08-20 | **Build artefacts and vendored binaries are untracked.** `node_modules/`, `.venv/`, `__pycache__/` and `tools/` were committed by the initial import — 27 393 tracked files, of which 27 096 were artefacts, so every commit carried Vite-cache and `.pyc` churn. They are now gitignored and removed from the index (files kept on disk). One exception stays tracked: the `tools/supersplat` gitlink. (`tools/test_assets/` was a second exception until the stubs were removed on 2026-08-22.) **A fresh clone therefore has no `tools/ffmpeg/` and no `tools/lichtfeld-studio-bin/`**: `setup.py` clones LichtFeld Studio from source and auto-detects FFmpeg on `PATH`, and the prebuilt binaries are re-downloaded by hand. That is the cost of not pushing ~1 GB of `.exe` to GitHub — where `slang-llvm.dll` (105 MB) would be rejected outright. |
 
 | 2026-08-20 | **Abort kills the tool's process tree; Pause is gone from the exe-driven steps.** `/control abort` cancelled the asyncio task, but every exe step streams stdout from a thread-pool `readline()` and held its `Popen` in a local: the cancellation unwound the coroutine and marked the step aborted while `LichtFeld-Studio.exe` kept training on the GPU, unreferenced, with the reader thread stuck on a pipe that never closed. `core/proc.py` registers every child by project directory and `request_abort` `taskkill /F /T`s the tree — RC and LFS spawn workers, so killing the parent alone orphans the process that actually holds the GPU. Killing it is also what closes the pipe and unblocks the reader. A child killed that way raises `ProcessAborted`, handled like `AnalysisAborted` so the step is `aborted`, not `error`. **Pause was pure theatre** — the event is only awaited between steps and `/start` runs one step per call, so no running step ever observed it; none of FFmpeg, RealityScan or LichtFeld Studio has a pause verb anyway. The button is removed from step 4 rather than left lying; reviving it means suspending the child process (`NtSuspendProcess`) or threading the event into the curation loops, which is a feature, not a wiring fix. |
 | 2026-08-20 | **The 3D viewer is in-app (three.js), and it never loads the step output (§7.3).** The SuperSplat route was dropped: `supersplat_url` points at the *public* editor, `https://superspl.at/editor`, which cannot reach a `localhost` static file — the iframe was not merely untested, it could not work. Against that, the §1 non-goal *"no 3D viewer beyond the existing PLY preview"* buys nothing, since the existing preview was the broken iframe. Two MIT dependencies, both in §10: `three` for the sparse cloud, `@mkkellogg/gaussian-splats-3d` for depth-sorted gaussians — a splat drawn as coloured points is a different picture, not a cheaper one. The size problem is solved in the backend, not the browser: 1.24 GB and 142 MB of ASCII are converted to a 32-byte `.splat` / 16-byte `PC3D` record and decimated by a uniform spread, cached under `projects/<slug>/preview/` and invalidated by source mtime. |
@@ -457,6 +455,9 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-21 | **The added columns are migrated with one ALTER each, not Alembic.** `SQLModel.metadata.create_all` only creates missing *tables*, so `archived_at` / `archive_path` would be absent from the existing `pipeline.db` and every query on them would fail with "no such column". `_add_missing_columns()` in `db/database.py` compares `PRAGMA table_info` against a declared list and adds what is missing — one user, one file, additive changes only. Anything a plain `ADD COLUMN` cannot express is the day this becomes a real migration tool. |
 | 2026-08-21 | **The project tiles date from UTC explicitly.** The backend serialises naive `datetime.utcnow()` with no offset, and `new Date("…T12:00:00")` reads that as *local* time — on UTC+2 every project was stamped two hours in the future and read "just now" for an hour. The tiles stamp the `Z` back on before parsing, and show the full path, the creation date and the last update. |
 | 2026-08-20 | **`.splat` and `.pc3d` are registered as `application/octet-stream`.** `StaticFiles` serves unknown extensions as `text/plain; charset=utf-8`, which invites anything in the path to treat a binary splat as text. |
+| 2026-08-22 | **A preview file is never rewritten, and a cancelled download no longer keeps it open.** Rebuilding a preview failed with `[WinError 5] Accès refusé` on the `.part` → final rename: the previous file was still held open by the app itself. `StaticFiles` streams through `anyio.AsyncFile`, whose `aclose()` is a *thread* call starting with a cancellation checkpoint — so any aborted download (`PointCloudCanvas` aborts its fetch on every level change and unmount, React StrictMode's double-mount included) unwinds before the close and leaks the handle until the server exits. On Windows that handle blocks the rename, and would equally block deleting or resetting the project's `preview/`. Two changes, at both ends: `AsyncFile.aclose()` closes in place (`api/file_handles.py` — closing a file is a syscall, not blocking IO worth a worker thread, and inline it cannot be cancelled), and the preview name carries an 8-hex fingerprint of the source's mtime and size (`rc_1000000_3d67781a.pc3d`), so a new revision writes a new name instead of replacing one somebody may be reading. Older revisions of the same (source, level) are pruned best-effort after each build — a file the OS still pins costs 16 MB, not a failed build — and `ply._finalise` retries the rename twice before giving up with a sentence instead of a WinError. The fingerprinted URL also stops the browser serving the previous cloud from cache. |
+| 2026-08-22 | **Stub mode is removed, and core principle #2 with it.** The four `*_stub` flags, the four simulated runners (`run_extract_stub`, `run_rc_stub`, `run_lfs_stub`, `run_blender_stub`), `StubConfig`, `tools/test_assets/` and every piece of stub UI are gone. The dispatchers went too: `run_rc` / `run_lfs` / `run_extract` / `run_blender` *are* the real runners now, not a branch in front of them. What the stubs were for is over — the pipeline runs end to end against RealityScan 2.2, LichtFeld Studio v0.5.3 and Blender on this workstation, and what they cost was no longer theoretical: the RC stub wrote a *gaussian* PLY where the real RC writes a sparse cloud (§7.3), the LFS stub wrote an empty `output.splat` purely to exercise format detection, the FFmpeg stub emitted 1×1 JPEGs that the sharpness pass had to special-case, and §7.2's whole "the stub is exempt" caveat existed to explain why the simulated path skipped the normalisation the real one needs. Three of the four had also drifted from the tools they claimed to simulate (RC 1.5 banners, `cameras.bin`/`images.bin` COLMAP logs LFS v0.5.3 no longer prints). A simulation nobody trusts is a second, wrong implementation of every step. `SetupScreen` now reports which tool paths are configured rather than which are faked, and its Proceed gate is `rc_exe_path && lfs_exe_path` — previously any stub being on was enough to pass it. |
+
 Any new structural decision → add a row here in the same commit.
 
 ---

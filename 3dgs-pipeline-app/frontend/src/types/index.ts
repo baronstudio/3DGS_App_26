@@ -92,8 +92,6 @@ export interface RCSettingsType {
   keep_largest: boolean;
   merge_components: boolean;
   rsbox_path?: string;
-  stub_enabled: boolean;
-  stub_duration: number;
 }
 
 // LichtFeld Studio v0.5.3 strategies. 'default' sends no --strategy flag and
@@ -106,8 +104,6 @@ export interface LFSSettingsType {
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
-  stub_enabled: boolean;
-  stub_duration: number;
 }
 
 // ── App defaults (defaults.json — layer 2 of the settings model) ─────────────
@@ -358,8 +354,9 @@ export interface AnalysisResponse {
 
 export type PreviewSource = 'rc' | 'lfs' | 'export';
 
-/** What the source file turned out to be, not which step wrote it: the RC stub
- *  writes a gaussian PLY where the real RC writes a plain sparse cloud. */
+/** What the source file turned out to be, not which step wrote it: a step may
+ *  produce a plain sparse cloud or a gaussian PLY, and the renderer follows the
+ *  file. */
 export type PreviewKind = 'cloud' | 'splat';
 
 export interface PreviewState {
