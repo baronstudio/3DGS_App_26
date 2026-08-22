@@ -34,3 +34,6 @@ imgui.ini
 
 # Vite build output (npm run build) — artefact, like node_modules/
 3dgs-pipeline-app/frontend/dist/
+
+# Local dev tooling — machine-specific, not for the repo
+scripts/sync_staging.sh

@@ -82,7 +82,7 @@ These are static files — no scraping needed, flags are hardcoded from official
 
 ```json
 {
-  "tool": "RealityCapture",
+  "tool": "RealityScan",
   "help_url": "https://rshelp.capturingreality.com/en-US/appbasics/allcommands.htm",
   "flags": [
     {
@@ -125,7 +125,7 @@ These are static files — no scraping needed, flags are hardcoded from official
       "flag": "-quit",
       "type": "boolean",
       "default": true,
-      "description": "Quit RealityCapture after all commands complete. Required for automation.",
+      "description": "Quit RealityScan after all commands complete. Required for automation.",
       "category": "core"
     }
   ]
@@ -278,7 +278,7 @@ async def preview_cli(tool: str, config: dict):
 ```
 ┌─────────────────────────────────────────────────┐
 │  CLI Configuration                              │
-│  [FFmpeg]  [RealityCapture]  [LichtFeld Studio] │  ← tool tabs
+│  [FFmpeg]  [RealityScan]  [LichtFeld Studio] │  ← tool tabs
 ├─────────────────────────────────────────────────┤
 │                                                 │
 │  📖 Docs: https://...            [Open ↗]       │
@@ -313,7 +313,7 @@ configSaved: false,     // flash confirmation
 
 tools: [
   { id: 'ffmpeg', label: 'FFmpeg',            icon: '🎞️' },
-  { id: 'rc',     label: 'RealityCapture',    icon: '📷' },
+  { id: 'rc',     label: 'RealityScan',    icon: '📷' },
   { id: 'lfs',    label: 'LichtFeld Studio',  icon: '✨' },
 ],
 

@@ -15,7 +15,7 @@ Target layout, next to the existing exports:
 
 ```
 projects/<slug>/rc_output/
-├── images/                 # the aligned frames, as fed to RC
+├── images/                 # the aligned frames, as fed to RS
 ├── sparse/0/
 │   ├── cameras.{bin|txt}   # intrinsics
 │   ├── images.{bin|txt}    # extrinsics, one entry per registered camera
@@ -27,15 +27,15 @@ projects/<slug>/rc_output/
 
 LFS is then invoked with `-d <rc_output>` unchanged — same flag, better dataset.
 
-**Route decided 2026-08-21: native RC export.** RealityScan 2.2 registers the
+**Route decided 2026-08-21: native RS export.** RealityScan 2.2 registers the
 exporter in its own `calibration.xml` (format `{280B11A4-…}`,
 `writer="RealityScan.Export.COLMAP"`), so no converter is needed — `build_rscmd()`
 adds a second `-exportRegistration` pointing at an export-params XML generated
 per run from `rc.colmap` (`core/steps/rc_export_params.py`). `directory_structure:
-standard` is RC's own name for `images/` + `sparse/0/`, so the layout above comes
-out of RC directly. See the two 2026-08-21 rows in CLAUDE.md §12.
+standard` is RS's own name for `images/` + `sparse/0/`, so the layout above comes
+out of RS directly. See the two 2026-08-21 rows in CLAUDE.md §12.
 
-**The trap, and where it actually was:** not the OpenGL→OpenCV flip — RC's
+**The trap, and where it actually was:** not the OpenGL→OpenCV flip — RS's
 template does that itself — but the *world* frame. It hard-codes `Rx+90`, which
 LFS's COLMAP loader passes through where its NeRF loader would have cancelled it.
 `rc.colmap.scene_rotate_x_deg = 180` composes that back to `Rx-90` so the trained
@@ -44,19 +44,19 @@ splat stays the way up it is today.
 **Still open — this is what remains of P1:**
 
 - **Nothing has been run against real RealityScan yet.** The parameter *names*
-  are RC's (recovered from the executable's string table: `colmapDirStructure`,
+  are RS's (recovered from the executable's string table: `colmapDirStructure`,
   `colmapFileType`, `colmapPointFiltering`, `colmapExportMasks`,
   `colmapMaskExtension`, the `undist*` family, `MvsExportRotationX`), but only
   `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` appear literally — `CDS_FLAT`,
   `CFT_BIN`, `CME_MASK_EXT`, `UFM_*` and `URM_*` are inferred, as is the
-  `<format><parameter variable= value=>` wrapper. Save the settings out of RC's
+  `<format><parameter variable= value=>` wrapper. Save the settings out of RS's
   export dialog once and run `rc_export_params.verify_against_saved_params()`
   against it; that one file settles all of it.
 - **Step 4 does not say which dataset it trained on.** LFS switches from NeRF to
   COLMAP silently; until it is logged, a half-written `sparse/0/` is invisible.
 
 **Acceptance:**
-- A real RC run produces `sparse/0/` and passes a re-import check.
+- A real RS run produces `sparse/0/` and passes a re-import check.
 - The converter is covered by the round-trip test above.
 - Only frames present in the exported registration are written — the split
   reported by `alignment_check.json` must not reappear as broken camera entries.
@@ -84,7 +84,7 @@ What the investigation actually found:
   decision was never "three.js or iframe" but "where does the file get made
   small" — and the answer is the backend (`core/ply.py`, ~1.7 s for the whole
   1.24 GB).
-- **A step's output is not always the kind its number suggests** (the RC stub,
+- **A step's output is not always the kind its number suggests** (the RS stub,
   removed 2026-08-22, wrote a gaussian PLY as `rc_output/pointcloud.ply`), so the
   renderer is chosen from the file's own properties, not from the step number.
 
@@ -99,7 +99,7 @@ Still open, deliberately:
   without a `--config` save schedule (see the LFS row in the decisions log).
 - **Colouring cameras by component.** `alignment_check.json` names the frames
   that never came back, and they have no pose — the viewer marks the amber
-  *edges* of each hole instead. Actual per-component colouring needs RC to
+  *edges* of each hole instead. Actual per-component colouring needs RS to
   export more than the maximal component.
 
 ---
@@ -130,12 +130,12 @@ Left open on purpose:
 
 ## Known gaps found on 2026-08-20 (not scheduled, worth a decision)
 
-- **RC precision / max features are not applied.** They live in `defaults.json`
+- **RS precision / max features are not applied.** They live in `defaults.json`
   and in the step 3 Advanced panel, but `build_rscmd()` does not emit them — the
-  app models no verb for RC alignment parameters. `rc.extra_align_commands` is
+  app models no verb for RS alignment parameters. `rc.extra_align_commands` is
   the escape hatch meanwhile. Decide: find the real verb, or drop the two knobs
   from the UI rather than let them lie.
-- **RC is fed the whole `frames/` directory**, curation verdicts included. The
+- **RS is fed the whole `frames/` directory**, curation verdicts included. The
   frames step 2 rejected as blurred or redundant still go into `-align`. Either
   that is deliberate (more frames = better chance of a single component, see
   §7.1) and should be said out loud in the UI, or step 3 should stage the kept

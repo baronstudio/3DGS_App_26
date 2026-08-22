@@ -85,7 +85,7 @@ const Step3_RC: React.FC = () => {
     try {
       await startPipeline(currentProjectId, 3, { rc: rcSettings });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to start RC alignment';
+      const msg = err instanceof Error ? err.message : 'Failed to start RS alignment';
       setError(msg);
     }
   };
@@ -95,10 +95,10 @@ const Step3_RC: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
-      <h2 className="text-xl font-semibold text-slate-100">Step 3 — RealityCapture Alignment</h2>
+      <h2 className="text-xl font-semibold text-slate-100">Step 3 — RealityScan Alignment</h2>
 
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3">
-        <span className="text-sm text-slate-400">RealityCapture alignment &amp; sparse reconstruction</span>
+        <span className="text-sm text-slate-400">RealityScan alignment &amp; sparse reconstruction</span>
         <Button
           variant="ghost"
           size="sm"
@@ -131,7 +131,7 @@ const Step3_RC: React.FC = () => {
       </Button>
 
       {(isRunning || isDone) && (
-        <ProgressBar step="rc" label="RC Alignment" />
+        <ProgressBar step="rc" label="RS Alignment" />
       )}
 
       {isDone && (cameras !== null || points !== null) && (

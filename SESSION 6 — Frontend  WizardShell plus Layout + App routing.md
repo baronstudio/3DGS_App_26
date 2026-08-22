@@ -35,7 +35,7 @@ Vertical sidebar navigator:
 Steps definition:
   1: { icon: Upload, label: "Import", key: "import" }
   2: { icon: Film, label: "Extract Frames", key: "extract" }
-  3: { icon: Crosshair, label: "RC Alignment", key: "rc" }
+  3: { icon: Crosshair, label: "RS Alignment", key: "rc" }
   4: { icon: Cpu, label: "LFS Training", key: "lfs" }
   5: { icon: Package, label: "Export", key: "export" }
   6: { icon: Box, label: "Blender Scene", key: "blender" }

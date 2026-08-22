@@ -41,7 +41,7 @@ Implement the last two sections of the Admin UI:
     },
     {
       "id": "rc",
-      "name": "RealityCapture",
+      "name": "RealityScan",
       "builtin": true,
       "exe_path": "C:/Program Files/Epic Games/RealityScan/RealityScan.exe",
       "description": "Camera alignment via photogrammetry",
@@ -116,7 +116,7 @@ async def validate_tool(tool_id: str):
 │  │  Path: ffmpeg (in PATH)            [Edit]   │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
-│  │  📷  RealityCapture        builtin  ● OK     │   │
+│  │  📷  RealityScan        builtin  ● OK     │   │
 │  │  Path: C:/Program Files/...         [Edit]   │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
@@ -193,7 +193,7 @@ Triggered by `[+ Add tool]` or `[Edit]`:
   "wizard_steps": [
     { "id": "import",   "order": 1, "label": "Import",        "enabled": true,  "locked": true  },
     { "id": "extract",  "order": 2, "label": "Extract Frames", "enabled": true,  "locked": false },
-    { "id": "rc",       "order": 3, "label": "RC Alignment",   "enabled": true,  "locked": false },
+    { "id": "rc",       "order": 3, "label": "RS Alignment",   "enabled": true,  "locked": false },
     { "id": "lfs",      "order": 4, "label": "LFS Training",   "enabled": true,  "locked": false },
     { "id": "export",   "order": 5, "label": "Export",         "enabled": true,  "locked": false },
     { "id": "blender",  "order": 6, "label": "Blender Scene",  "enabled": true,  "locked": false }
@@ -220,7 +220,7 @@ PUT  /api/admin/wizard/steps          # Save full steps array (order + enabled +
 │                                                     │
 │  ⠿  1  Import          [locked]     ● enabled      │
 │  ⠿  2  Extract Frames  [rename]     ● enabled  ◉   │
-│  ⠿  3  RC Alignment    [rename]     ● enabled  ◉   │
+│  ⠿  3  RS Alignment    [rename]     ● enabled  ◉   │
 │  ⠿  4  LFS Training    [rename]     ● enabled  ◉   │
 │  ⠿  5  Export          [rename]     ● enabled  ◉   │
 │  ⠿  6  Blender Scene   [rename]     ○ disabled ◉   │

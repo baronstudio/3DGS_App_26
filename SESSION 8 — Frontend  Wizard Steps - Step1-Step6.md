@@ -26,10 +26,10 @@ recharts must be installed: npm install recharts @types/recharts
 - "Extract Frames" button → calls startPipeline(projectId, 2, ffmpegSettings)
 - While running: show FrameGallery panel (live updating)
 - ProgressBar component for "extract" step
-- After completion: frame count badge, "Proceed to RC" button
+- After completion: frame count badge, "Proceed to RS" button
 
-### components/wizard/steps/Step3_RC.tsx — RealityCapture Alignment
-- Stub status banner (if rc_stub=true): orange banner "⚠ STUB MODE — RC simulated"
+### components/wizard/steps/Step3_RC.tsx — RealityScan Alignment
+- Stub status banner (if rc_stub=true): orange banner "⚠ STUB MODE — RS simulated"
 - "Advanced Settings" → RCSettings drawer
 - "Run Alignment" button → startPipeline(projectId, 3, rcSettings)
 - ProgressBar for "rc" step

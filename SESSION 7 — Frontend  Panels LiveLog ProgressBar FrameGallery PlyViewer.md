@@ -53,7 +53,7 @@ Extracted frames preview grid:
   - Checkbox for selection (appears on hover or always visible)
 - Bulk delete button (appears when selection > 0): calls DELETE /api/files/{id}/frames
 - Frame count badge at top: "N frames extracted"
-- VRAM estimate: rough formula: N_frames * 5MB → "~Xmb VRAM for RC"
+- VRAM estimate: rough formula: N_frames * 5MB → "~Xmb VRAM for RS"
   (display as info badge)
 - Loading state: skeleton grid while fetching
 

@@ -39,7 +39,7 @@ Verify: import works in Step4_LFS.tsx
 5. Click Proceed → WizardShell opens
 6. Step 1: enter project name, create project → verify folder created in projects/
 7. Step 2: click Extract → verify stub creates N jpg files in projects/{slug}/frames/
-8. Step 3: click RC Alignment → verify stub runs, logs stream to LiveLog
+8. Step 3: click RS Alignment → verify stub runs, logs stream to LiveLog
 9. Step 4: click LFS Training → verify metrics update in chart
 10. Step 5: verify PLY appears in export list
 11. Fix any errors found

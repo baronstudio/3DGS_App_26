@@ -637,7 +637,7 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                 )}
                 <Row
                   label="Scene rotation X (deg)"
-                  hint="180 keeps a COLMAP-trained splat the same way up as a transforms.json-trained one: RealityScan's COLMAP template rotates the scene Rx+90, and LichtFeld's COLMAP loader — unlike its NeRF loader — does not compensate. Set 0 only where RC's +Z was never the true vertical."
+                  hint="180 keeps a COLMAP-trained splat the same way up as a transforms.json-trained one: RealityScan's COLMAP template rotates the scene Rx+90, and LichtFeld's COLMAP loader — unlike its NeRF loader — does not compensate. Set 0 only where RS's +Z was never the true vertical."
                 >
                   <NumField
                     value={draft.rc.colmap.scene_rotate_x_deg}

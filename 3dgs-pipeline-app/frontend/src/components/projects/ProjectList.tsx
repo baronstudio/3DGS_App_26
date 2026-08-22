@@ -27,7 +27,7 @@ const STEP_LABELS: Record<number, string> = {
   0: 'Not started',
   1: 'Import',
   2: 'Extract',
-  3: 'RC Align',
+  3: 'RS Align',
   4: 'LFS Train',
   5: 'Export',
   6: 'Blender',

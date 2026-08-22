@@ -39,7 +39,7 @@ Controls:
   Custom .rsbox file: file input (optional)
   
   ── DEV section (orange border) ──
-  <StubToggle tool="RealityCapture" enabled={settings.stub_enabled} onChange={...}
+  <StubToggle tool="RealityScan" enabled={settings.stub_enabled} onChange={...}
     durationSeconds={settings.stub_duration} onDurationChange={...} />
 
 On any change: call PUT /api/settings/ with updated stubs config via useSettings().updateSettings

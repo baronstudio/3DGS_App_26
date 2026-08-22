@@ -10,7 +10,7 @@ which describe the ground, the sky and the neighbours' roof — not the subject.
 This session adds the missing chain, in three places:
 
 ```
-[3] RC       set + export the reconstruction region      → rc_output/region.rsbox
+[3] RS       set + export the reconstruction region      → rc_output/region.rsbox
                                                           → rc_output/crop_box.json
 [4] LFS      seed training only inside that box           → pointcloud_cropped.ply
 [5] Export   gaussian optimisation (LFS "Splat Simplify") → export/<stem>_<N>.ply
@@ -37,7 +37,7 @@ rather than invented — the same rule that produced §7.2 of CLAUDE.md.
 
 Two consequences:
 
-- RC exports **nothing** unless a region exists. A `-set…Region` verb must run
+- RS exports **nothing** unless a region exists. A `-set…Region` verb must run
   before the export, and it must run **after `-align`** — `ByDensity` reads the
   sparse cloud.
 - The file extension in RealityScan 2.2 is `.rsbox` (RealityCapture wrote
@@ -95,7 +95,7 @@ From the shipped Python plugins (`bin/lfs_plugins/`) and the exe's own strings:
 ```python
 class RCDefaults(BaseModel):
     ...
-    # Which -set…Region verb runs before the export. RC exports nothing unless
+    # Which -set…Region verb runs before the export. RS exports nothing unless
     # a region exists, and the region must be set after -align: ByDensity reads
     # the sparse cloud. "off" skips the whole region block.
     region_mode: Literal["off", "auto", "density"] = "density"
@@ -131,14 +131,14 @@ No FastAPI, no broadcast — returns reports the step broadcasts (core principle
 
 ```python
 parse_rsbox(path: Path) -> OrientedBox | None
-    # XML. Tolerant by design, RC's writer has changed shape between versions:
+    # XML. Tolerant by design, RS's writer has changed shape between versions:
     #   <centre> | <center>          3 floats
     #   <widthHeightDepth>           3 floats
     #   <yawPitchRoll>               3 floats, DEGREES
     #   <residual R=… t=… s=…>       optional rigid+scale correction, applied if present
     # Anything missing → None, and the caller falls back (§1.5).
 
-corners(box) -> list[[x, y, z]]        # 8, in RC's frame
+corners(box) -> list[[x, y, z]]        # 8, in RS's frame
 
 to_lfs_frame(points) -> list[...]      # (x, y, z) -> (x, -z, y)
 
@@ -151,7 +151,7 @@ write_crop_box(rc_output, box, source, stats) -> dict
 ```
 
 **The trap that must not be got wrong.** `-exportSparsePointCloud` writes the
-cloud in RC's own Z-up frame and `-exportRegistration` writes the cameras in the
+cloud in RS's own Z-up frame and `-exportRegistration` writes the cameras in the
 NeRF Y-up frame; `rc_postprocess.align_pointcloud_to_cameras` already rotates
 the cloud by `Rx+90`, `(x, y, z) -> (x, -z, y)` to reconcile them (CLAUDE.md
 §7.2). **The region is exported in the same Z-up frame as the cloud and needs
@@ -193,14 +193,14 @@ The step computes `points_inside / points_total` against the rotated cloud and:
 - No `.rsbox` / unparseable / `region_mode == "off"` → fall back to
   `box_from_pointcloud(percentile=1.0)`, `source: "pointcloud_percentile"`,
   INFO not WARNING. That fallback is a genuinely useful box.
-- Log the coverage on every run: `[RC] Crop box: 214 883/286 104 sparse points
+- Log the coverage on every run: `[RS] Crop box: 214 883/286 104 sparse points
   inside (75.1%), from region.rsbox.`
 
 ### 1.6 Stub
 
 `run_rc_stub` writes a plausible `region.rsbox` and a `crop_box.json` derived
 from `sample.ply` percentiles, so step 4's crop path is exercisable with no GPU
-(core principle #2). The stub emulates RC's *result*, so it writes the box
+(core principle #2). The stub emulates RS's *result*, so it writes the box
 already in the LFS frame — same exemption as `normalise_for_lfs`, and it must be
 commented as such.
 
@@ -380,7 +380,7 @@ no renumbering.
 
 ### 4.2 `Step4_LFS.tsx` — "Crop box"
 
-- Enable toggle, source (From RC region / Manual), margin %.
+- Enable toggle, source (From RS region / Manual), margin %.
 - Manual: six numeric inputs Min X/Y/Z, Max X/Y/Z — the same six fields as the
   LFS `cropbox_controls.py` panel, same order.
 - A "Fit to sparse cloud" button filling them from the percentile box.
@@ -433,7 +433,7 @@ Apply → `POST /api/pipeline/optimise`. Cancel → the existing
 
 | Date | Decision |
 |---|---|
-| 2026-08-20 | **The reconstruction region is set by RC and re-expressed in the LFS frame.** RC exports no region unless one is set, and `-setReconstructionRegionByDensity` must run after `-align`. The `.rsbox` is written in RC's Z-up frame like the sparse cloud, so it goes through the same `Rx+90`, `(x, y, z) -> (x, -z, y)` as `align_pointcloud_to_cameras` — its 8 corners, not its min/max, because the region is oriented. Without the rotation the box does not error, it deletes the scene and keeps the sky. Falls back to a percentile box from the sparse cloud, and never fails the step. |
+| 2026-08-20 | **The reconstruction region is set by RS and re-expressed in the LFS frame.** RS exports no region unless one is set, and `-setReconstructionRegionByDensity` must run after `-align`. The `.rsbox` is written in RS's Z-up frame like the sparse cloud, so it goes through the same `Rx+90`, `(x, y, z) -> (x, -z, y)` as `align_pointcloud_to_cameras` — its 8 corners, not its min/max, because the region is oriented. Without the rotation the box does not error, it deletes the scene and keeps the sky. Falls back to a percentile box from the sparse cloud, and never fails the step. |
 | 2026-08-20 | **The training crop rides on `ply_file_path`, not on a CLI flag.** LFS v0.5.3 has no headless crop verb — the trainer *is* crop-aware (`CropBox filtering: {} -> {} points`) but the box is a GUI scene node. The Blender/NeRF loader reads `ply_file_path` from `transforms.json` (default `pointcloud.ply`), so step 4 writes `pointcloud_cropped.ply` and repoints that key, leaving the original untouched. This crops the initialisation, not the optimiser: the export-step crop is what bounds the final splat, and the UI says so. |
 | 2026-08-20 | **Splat optimisation ships with a built-in engine and an LFS engine behind a probe.** LFS's Splat Simplify is a Python-API call (`lf.simplify_splats(ratio, lod_base, opacity_prune_threshold)`), not a CLI verb, and is bugged in v0.5.3. The built-in numpy pass — crop, opacity prune on the **post-sigmoid** value, then top-N by opacity × volume — works today; `--help` is probed for a simplify verb and the engine switches with no code change when the next build lands. `lod_base` is LFS-only and the UI says the built-in ignores it rather than faking a meaning for it. |
 | 2026-08-20 | **Optimisation is re-runnable alone (`POST /api/pipeline/optimise`), broadcasting under the step name `optimise` mapped to step 5.** Same shape and same reason as `/analyze` → `curate` → step 2: a target count is tuned iteratively and no one retrains for forty minutes to try another ratio. |
@@ -465,7 +465,7 @@ Apply → `POST /api/pipeline/optimise`. Cancel → the existing
 
 **Real tools:**
 
-6. RC produces a `.rsbox` that parses; the box drawn from `crop_box.json`
+6. RS produces a `.rsbox` that parses; the box drawn from `crop_box.json`
    contains the subject and not the horizon — check `coverage`, and check the
    cropped cloud opens in the LFS viewer aligned with the cameras. **If the
    cropped cloud is 90° off from the cameras, the rotation of §1.3 is wrong —
@@ -491,8 +491,8 @@ Apply → `POST /api/pipeline/optimise`. Cancel → the existing
 ## 7. Known traps, collected
 
 1. **The Rx+90.** §1.3. The single most likely way to ship this broken.
-2. **RC exports no region unless one is set.** `-exportReconstructionRegion`
-   alone yields nothing and RC still exits 0.
+2. **RS exports no region unless one is set.** `-exportReconstructionRegion`
+   alone yields nothing and RS still exits 0.
 3. **`.rsbox` vs `.rcbox`.** RealityScan 2.2 renamed it. Read both.
 4. **Pre-sigmoid opacity** in the 3DGS PLY. §3.2.
 5. **`ply_file_path` is relative to the transforms.json directory**, like the

@@ -9,7 +9,7 @@ Implement tool detection and dependency status:
 
 TOOLS_TO_CHECK = [
   { id: "ffmpeg", name: "FFmpeg", detect: "ffmpeg -version" in PATH or check config.tools.ffmpeg_path },
-  { id: "rc", name: "RealityCapture", detect: check config.tools.rc_exe_path exists },
+  { id: "rc", name: "RealityScan", detect: check config.tools.rc_exe_path exists },
   { id: "lfs", name: "LichtFeld Studio", detect: check config.tools.lfs_exe_path exists },
   { id: "blender", name: "Blender", detect: check config.tools.blender_exe_path exists }
 ]

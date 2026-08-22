@@ -285,7 +285,7 @@ const Step2_Extract: React.FC = () => {
             className="bg-green-700 hover:bg-green-600 text-white gap-1"
           >
             <CheckCircle className="w-4 h-4" />
-            Validate &amp; Continue to RC Alignment
+            Validate &amp; Continue to RS Alignment
           </Button>
         </div>
       )}

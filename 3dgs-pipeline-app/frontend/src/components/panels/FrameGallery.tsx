@@ -67,8 +67,8 @@ export const FrameGallery: React.FC<FrameGalleryProps> = ({
 
   const vramEstimate = Math.round((frames.length * VRAM_MB_PER_FRAME) / 1024 * 10) / 10;
   const vramLabel = vramEstimate >= 1
-    ? `~${vramEstimate}GB VRAM for RC`
-    : `~${frames.length * VRAM_MB_PER_FRAME}MB VRAM for RC`;
+    ? `~${vramEstimate}GB VRAM for RS`
+    : `~${frames.length * VRAM_MB_PER_FRAME}MB VRAM for RS`;
 
   const filters: { id: FilterMode; label: string; count: number }[] = [
     { id: 'all', label: 'All', count: frames.length },

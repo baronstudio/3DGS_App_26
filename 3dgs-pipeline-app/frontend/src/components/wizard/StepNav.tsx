@@ -6,7 +6,7 @@ import type { StepStatus } from '@/types';
 const STEPS = [
   { index: 1, icon: Upload, label: 'Import', key: 'import' },
   { index: 2, icon: Film, label: 'Extract Frames', key: 'extract' },
-  { index: 3, icon: Crosshair, label: 'RC Alignment', key: 'rc' },
+  { index: 3, icon: Crosshair, label: 'RS Alignment', key: 'rc' },
   { index: 4, icon: Cpu, label: 'LFS Training', key: 'lfs' },
   { index: 5, icon: Package, label: 'Export', key: 'export' },
   { index: 6, icon: Box, label: 'Blender Scene', key: 'blender' },

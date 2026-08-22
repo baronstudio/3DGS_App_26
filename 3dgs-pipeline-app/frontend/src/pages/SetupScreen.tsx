@@ -11,7 +11,7 @@ const ToolStatus: React.FC = () => {
 
     const tools = [
         { name: 'FFmpeg', path: settings.tools.ffmpeg_path },
-        { name: 'RealityCapture', path: settings.tools.rc_exe_path },
+        { name: 'RealityScan', path: settings.tools.rc_exe_path },
         { name: 'LichtFeld Studio', path: settings.tools.lfs_exe_path },
         { name: 'Blender', path: settings.tools.blender_exe_path },
     ];
@@ -34,7 +34,7 @@ const ToolStatus: React.FC = () => {
                 ))}
             </div>
             <p className="text-xs text-gray-500 mt-4 text-center">
-                RealityCapture and LichtFeld Studio are required to run the pipeline. Set their
+                RealityScan and LichtFeld Studio are required to run the pipeline. Set their
                 paths in Settings.
             </p>
         </div>

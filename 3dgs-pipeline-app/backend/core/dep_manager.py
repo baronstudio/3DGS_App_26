@@ -7,7 +7,7 @@ from backend.core.config import load_config
 
 TOOLS_META = [
     {"id": "ffmpeg",  "name": "FFmpeg"},
-    {"id": "rc",      "name": "RealityCapture"},
+    {"id": "rc",      "name": "RealityScan"},
     {"id": "lfs",     "name": "LichtFeld Studio"},
     {"id": "blender", "name": "Blender"},
 ]
@@ -96,7 +96,7 @@ def get_tool_status() -> list[dict]:
         },
         {
             "id":          "rc",
-            "name":        "RealityCapture",
+            "name":        "RealityScan",
             "found":       rc_found,
             "path":        rc_path,
         },

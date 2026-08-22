@@ -245,7 +245,7 @@ async def check_alignment_coverage(
         if not input_names or source is None:
             await broadcast_fn(
                 "rc", "WARNING",
-                "[RC] Alignment coverage unknown - no registration export found "
+                "[RS] Alignment coverage unknown - no registration export found "
                 "to compare against the input frames.",
             )
             report = {
@@ -286,12 +286,12 @@ async def check_alignment_coverage(
 
             if missing_count == 0:
                 renamed = (
-                    " RC renamed the exported images, so the cameras were "
+                    " RS renamed the exported images, so the cameras were "
                     "matched by export order."
                 ) if matched_by == "position" else ""
                 await broadcast_fn(
                     "rc", "SUCCESS",
-                    f"[RC] Coverage OK - {aligned}/{len(input_names)} cameras "
+                    f"[RS] Coverage OK - {aligned}/{len(input_names)} cameras "
                     f"registered, single component.{renamed}",
                 )
             else:
@@ -308,12 +308,12 @@ async def check_alignment_coverage(
                     which = f" Missing: {sample}{more}."
                 else:
                     which = (
-                        " RC renamed the exported images, so which frames were "
+                        " RS renamed the exported images, so which frames were "
                         "dropped cannot be read from the export - only how many."
                     )
                 await broadcast_fn(
                     "rc", "WARNING",
-                    f"[RC] Alignment split - {aligned}/{len(input_names)} cameras "
+                    f"[RS] Alignment split - {aligned}/{len(input_names)} cameras "
                     f"registered ({ratio:.1%}). {missing_count} frames landed in "
                     f"another component and were dropped.{seq_txt}{which} Fix: "
                     f"re-align with a higher image overlap, keep the frames the "
@@ -329,7 +329,7 @@ async def check_alignment_coverage(
 
     except Exception as exc:  # never sink a good alignment over the report
         await broadcast_fn(
-            "rc", "WARNING", f"[RC] Alignment coverage check skipped: {exc}"
+            "rc", "WARNING", f"[RS] Alignment coverage check skipped: {exc}"
         )
         return {"checked": False, "reason": str(exc)}
 
@@ -359,11 +359,11 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     script = build_rscmd(frames_dir, rc_output, rc)
     await broadcast_fn(
         "rc", "INFO",
-        "[RC] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
+        "[RS] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
     )
 
     cmd = [str(rc_exe), "-headless", "-execRSCMD", str(script)]
-    await broadcast_fn("rc", "INFO", f"[RC] Launching: {' '.join(cmd)}")
+    await broadcast_fn("rc", "INFO", f"[RS] Launching: {' '.join(cmd)}")
 
     loop = asyncio.get_running_loop()
 
@@ -392,17 +392,17 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
         raise ProcessAborted("RealityScan was stopped by the user.")
 
     if returncode != 0:
-        raise RuntimeError(f"RealityCapture exited with code {returncode}")
+        raise RuntimeError(f"RealityScan exited with code {returncode}")
 
     if rc.normalise_for_lfs:
         await _normalise_export_for_lfs(rc_output, broadcast_fn)
 
-    await broadcast_fn("rc", "INFO", "[RC] Alignment complete - checking coverage.")
+    await broadcast_fn("rc", "INFO", "[RS] Alignment complete - checking coverage.")
     coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
 
     aligned = coverage.get("aligned_count")
     tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
-    await broadcast_fn("rc", "SUCCESS", f"[RC] Step complete{tail}.", progress=1.0)
+    await broadcast_fn("rc", "SUCCESS", f"[RS] Step complete{tail}.", progress=1.0)
     return {"rc_output": str(rc_output), "alignment": coverage}
 
 
@@ -418,7 +418,7 @@ async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:
         if report["transforms"].get("patched"):
             await broadcast_fn(
                 "rc", "INFO",
-                f"[RC] transforms.json normalised for LichtFeld Studio - "
+                f"[RS] transforms.json normalised for LichtFeld Studio - "
                 f"{report['transforms']['camera_model']} intrinsics hoisted to the "
                 f"top level over {report['transforms']['frames']} frames.",
             )
@@ -426,22 +426,22 @@ async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:
         if report["pointcloud"].get("rotated"):
             await broadcast_fn(
                 "rc", "INFO",
-                f"[RC] Sparse cloud rotated into the camera frame "
+                f"[RS] Sparse cloud rotated into the camera frame "
                 f"({report['pointcloud']['rotation']}, "
-                f"{report['pointcloud']['points']:,} points) - RC exports the "
+                f"{report['pointcloud']['points']:,} points) - RS exports the "
                 f"cloud Z-up and the registration Y-up.",
             )
         elif report["pointcloud"].get("reason") not in (None, "already rotated"):
             await broadcast_fn(
                 "rc", "WARNING",
-                f"[RC] Sparse cloud left in RC's frame: "
+                f"[RS] Sparse cloud left in RS's frame: "
                 f"{report['pointcloud']['reason']}. It will not line up with the "
                 f"cameras in LichtFeld Studio.",
             )
     except Exception as exc:
         await broadcast_fn(
             "rc", "WARNING",
-            f"[RC] Could not normalise the export for LichtFeld Studio: {exc}",
+            f"[RS] Could not normalise the export for LichtFeld Studio: {exc}",
         )
         report["error"] = str(exc)
     return report

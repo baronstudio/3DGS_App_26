@@ -8,7 +8,7 @@
 Build a **local web application** that orchestrates a full **3D Gaussian Splatting production pipeline** from a DJI Action Cam 4K MP4 video to a final `.ply` / `.splat` file, auto-opened in SuperSplat.
 
 The stack is based on:
-- **RealityCapture (RealityScan)** — camera alignment via CLI (`.bat` / `.rscmd` scripts)
+- **RealityScan** — camera alignment via CLI (`.bat` / `.rscmd` scripts)
 - **LichtFeld Studio** — 3DGS training via CLI headless mode
 - **FFmpeg** — video frame extraction
 - **SuperSplat** — final viewer, auto-launched at end of pipeline
@@ -50,7 +50,7 @@ All processing happens on the user's machine — no cloud, no external API.
 │   │   │   │   ├── steps/
 │   │   │   │   │   ├── Step1_Import.tsx    # Video + data import
 │   │   │   │   │   ├── Step2_Extract.tsx   # FFmpeg frame extraction
-│   │   │   │   │   ├── Step3_RC.tsx        # RealityCapture alignment
+│   │   │   │   │   ├── Step3_RC.tsx        # RealityScan alignment
 │   │   │   │   │   ├── Step4_LFS.tsx       # LichtFeld Studio training
 │   │   │   │   │   ├── Step5_Export.tsx    # PLY / splat export + SuperSplat
 │   │   │   │   │   └── Step6_Blender.tsx   # Optional Blender/SplatForge scene
@@ -63,7 +63,7 @@ All processing happens on the user's machine — no cloud, no external API.
 │   │   │   ├── settings/
 │   │   │   │   ├── SettingsDrawer.tsx      # Advanced settings panel (collapsible)
 │   │   │   │   ├── FFmpegSettings.tsx      # FPS, quality, mpdecimate toggle
-│   │   │   │   ├── RCSettings.tsx          # RC alignment params, component filter
+│   │   │   │   ├── RCSettings.tsx          # RS alignment params, component filter
 │   │   │   │   └── LFSSettings.tsx         # Iterations, MCMC/default, learning rate, etc.
 │   │   │   └── ui/                         # shadcn/ui auto-generated components
 │   │   ├── store/
@@ -92,7 +92,7 @@ All processing happens on the user's machine — no cloud, no external API.
 │   │   ├── pipeline_runner.py      # Orchestrates all steps sequentially
 │   │   ├── steps/
 │   │   │   ├── step_extract.py     # FFmpeg frame extraction
-│   │   │   ├── step_rc.py          # RealityCapture CLI execution
+│   │   │   ├── step_rc.py          # RealityScan CLI execution
 │   │   │   ├── step_lfs.py         # LichtFeld Studio CLI execution
 │   │   │   ├── step_export.py      # PLY/splat file detection + copy
 │   │   │   └── step_blender.py     # Blender headless scene generation
@@ -104,18 +104,18 @@ All processing happens on the user's machine — no cloud, no external API.
 │   ├── db/
 │   │   └── database.py             # SQLite init via SQLModel
 │   ├── scripts/
-│   │   ├── rc_align_export.rscmd   # RealityCapture .rscmd script template
+│   │   ├── rc_align_export.rscmd   # RealityScan .rscmd script template
 │   │   └── blender_splatforge.py   # Blender Python script for SplatForge scene
 │   └── requirements.txt
 ├── tools/                          # Auto-cloned external tools (git clone targets)
 │   ├── lichtfeld-studio/           # MrNeRF/LichtFeld-Studio
 │   ├── supersplat/                 # playcanvas/supersplat (local fallback)
-│   └── colmap/                     # fallback if RC not found
+│   └── colmap/                     # fallback if RS not found
 ├── projects/                       # User projects (created at runtime)
 │   └── [project_name]/
 │       ├── input/                  # Original MP4 + DJI data files
 │       ├── frames/                 # FFmpeg extracted frames
-│       ├── rc_output/              # RC registration CSV + sparse PLY
+│       ├── rc_output/              # RS registration CSV + sparse PLY
 │       ├── lfs_output/             # LichtFeld Studio trained output
 │       └── export/                 # Final PLY, SPLAT, .blend scene
 ├── setup.py                        # First-run setup: .venv, pip install, git clones
@@ -185,9 +185,9 @@ ffmpeg -i input.mp4 -vf "fps=2,mpdecimate" -qscale:v 2 frames/frame_%04d.jpg
 - Manual frame deletion (checkbox + bulk delete) before proceeding
 - Frame count badge + estimated VRAM requirement display
 
-### STEP 3 — RealityCapture Alignment (CLI)
+### STEP 3 — RealityScan Alignment (CLI)
 **Wizard mode:**
-Run the following RC CLI sequence via a generated `.bat` / `.rscmd`:
+Run the following RS CLI sequence via a generated `.bat` / `.rscmd`:
 ```bat
 RealityScan.exe ^
   -addFolder "projects/[name]/frames/" ^
@@ -197,17 +197,17 @@ RealityScan.exe ^
   -quit
 ```
 **Advanced settings (drawer):**
-- Alignment precision: Preview / Normal / High (maps to RC `-setAlignmentPreset`)
+- Alignment precision: Preview / Normal / High (maps to RS `-setAlignmentPreset`)
 - Max features per image: slider 40000–80000
 - Component filter: keep largest only (toggle, maps to `-selectMaximalComponent`)
 - Custom reconstruction region: import `.rsbox` file
-- Export format fallback: COLMAP Text if RC not found
+- Export format fallback: COLMAP Text if RS not found
 
 **Live display:**
-- RC process stdout/stderr streamed to `LiveLog` panel via WebSocket
+- RS process stdout/stderr streamed to `LiveLog` panel via WebSocket
 - Parsed progress: detect "Aligned X cameras" lines and update progress bar
 - On completion: show sparse point cloud stats (camera count, point count)
-- Fallback alert if RC not found: propose COLMAP instead
+- Fallback alert if RS not found: propose COLMAP instead
 
 ### STEP 4 — LichtFeld Studio Training (CLI headless)
 **Wizard mode:**
@@ -364,8 +364,8 @@ On first run, the UI shows a "Setup" screen before the wizard:
 - Checklist of all dependencies
 - Green/red status per tool (detected / missing)
 - "Auto-install missing" button → triggers dep_manager
-- Manual path override for RC, LFS, Blender, FFmpeg
-- "Proceed to pipeline" button (enabled when RC + LFS + FFmpeg are resolved)
+- Manual path override for RS, LFS, Blender, FFmpeg
+- "Proceed to pipeline" button (enabled when RS + LFS + FFmpeg are resolved)
 
 ---
 
@@ -395,7 +395,7 @@ xdg-open http://localhost:5173 2>/dev/null || open http://localhost:5173
 
 ---
 
-## RC CLI SCRIPT TEMPLATE (`rc_align_export.rscmd`)
+## RS CLI SCRIPT TEMPLATE (`rc_align_export.rscmd`)
 
 ```
 -addFolder "$(arg0)"
@@ -406,7 +406,7 @@ xdg-open http://localhost:5173 2>/dev/null || open http://localhost:5173
 -quit
 ```
 
-The Python step (`step_rc.py`) generates the `.xml` parameter files for registration and PLY export using RC's documented XML schema, then calls:
+The Python step (`step_rc.py`) generates the `.xml` parameter files for registration and PLY export using RS's documented XML schema, then calls:
 ```bat
 RealityScan.exe -execrscmd rc_align_export.rscmd "frames_path" "rc_output_path" "scripts_path"
 ```
@@ -499,7 +499,7 @@ print("[3DGS Pipeline] Open in Blender and install SplatForge addon to begin rel
 6. **SuperSplat integration**: Serve the output PLY via FastAPI static route. The "Open in SuperSplat" button constructs: `https://superspl.at/editor?load=http://localhost:8000/static/projects/{id}/export/output.ply` and opens it in the default browser via `webbrowser.open()`.
 
 7. **README.md**: Generate a full README with:
-   - Prerequisites (NVIDIA GPU, CUDA 12.8+, Python 3.11+, Node 20+, RC installed via Epic Games Launcher, FFmpeg in PATH)
+   - Prerequisites (NVIDIA GPU, CUDA 12.8+, Python 3.11+, Node 20+, RS installed via Epic Games Launcher, FFmpeg in PATH)
    - Quick start: `python setup.py && start.bat`
    - Tool path configuration
    - Pipeline walkthrough with screenshots placeholders
@@ -510,11 +510,11 @@ print("[3DGS Pipeline] Open in Blender and install SplatForge addon to begin rel
 
 ## IMPORTANT NOTES FOR THE AGENT
 
-- **Do not hallucinate tool CLIs.** Use only documented RC CLI commands from `rshelp.capturingreality.com`. The key commands are: `-addFolder`, `-align`, `-selectMaximalComponent`, `-exportRegistration`, `-exportSparsePointCloud`, `-quit`, `-execrscmd`.
+- **Do not hallucinate tool CLIs.** Use only documented RS CLI commands from `rshelp.capturingreality.com`. The key commands are: `-addFolder`, `-align`, `-selectMaximalComponent`, `-exportRegistration`, `-exportSparsePointCloud`, `-quit`, `-execrscmd`.
 - **LichtFeld Studio CLI**: The documented headless syntax is `LichtFeld-Studio.exe -d <colmap_dataset_path> -o <output_path> -i <iterations>`. Additional flags: `--strategy mcmc`, `--eval`, `--save-eval-images`, `--render-mode RGB_D`. Source: [LichtFeld Studio Wiki](https://github.com/MrNeRF/LichtFeld-Studio/wiki).
 - **FFmpeg frame extraction**: Use `-vf "fps=2,mpdecimate" -qscale:v 2` as default. The `mpdecimate` filter requires FFmpeg compiled with it (standard builds include it).
 - **Python subprocess**: Use `asyncio.create_subprocess_exec()` for non-blocking execution. Stream stdout line by line via `async for line in process.stdout`.
-- **COLMAP format**: LichtFeld Studio expects COLMAP format input (images + sparse/0/ with cameras.bin, images.bin, points3D.bin). RealityCapture exports to COLMAP format via `-exportColmap` command — use this instead of the CSV/PLY approach if the LFS version requires strict COLMAP format. Implement both paths with auto-detection.
+- **COLMAP format**: LichtFeld Studio expects COLMAP format input (images + sparse/0/ with cameras.bin, images.bin, points3D.bin). RealityScan exports to COLMAP format via `-exportColmap` command — use this instead of the CSV/PLY approach if the LFS version requires strict COLMAP format. Implement both paths with auto-detection.
 - **`.venv` activation in subprocess**: When calling Python scripts from within the app, always use the `.venv` Python interpreter explicitly: `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (Linux).
 - The user is on **Windows** as primary platform. All path separators must handle both `\\` and `/`. Use `pathlib.Path` throughout.
 - **Do not install or recommend Postshot** — the user has explicitly chosen LichtFeld Studio.
