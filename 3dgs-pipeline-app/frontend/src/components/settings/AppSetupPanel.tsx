@@ -598,7 +598,7 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
 
                 <SubHeading
                   title="COLMAP export"
-                  note="Written next to transforms.json, not instead of it. LichtFeld Studio picks the COLMAP dataset over the NeRF one on its own, and it carries one intrinsic per image rather than one median for all of them — which matters because RealityScan crops every undistorted image slightly differently."
+                  note="This is what step 4 trains on. It goes in its own rc_output/<project>_COLMAP/ folder, next to transforms.json rather than instead of it — the coverage check, the camera overlay and the preview still read the NeRF export. What it buys is one intrinsic per image instead of one median for all of them, which matters because RealityScan crops every undistorted image slightly differently. Turn it off and step 4 falls back to transforms.json, with a warning."
                 />
                 <Row label="Export COLMAP dataset">
                   <Switch
@@ -621,14 +621,14 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                 </Row>
                 <Row
                   label="File type"
-                  hint="Binary is what LichtFeld Studio takes when both are present, and points3D in ASCII runs to hundreds of megabytes."
+                  hint="ASCII, because it is the only one RealityScan 2.2 actually honours — the token for binary is not in the executable at all, and asking for it writes text anyway. Binary would be smaller (the text model is ~110 MB per run) and is what LichtFeld Studio prefers when both are present; step 3 warns if what RealityScan writes differs from what was asked."
                 >
                   <Choice
                     value={draft.rc.colmap.file_type}
                     onChange={(v) => patchColmap('file_type', v)}
                     options={[
-                      { value: 'binary', label: 'Binary (.bin)' },
                       { value: 'ascii', label: 'ASCII (.txt)' },
+                      { value: 'binary', label: 'Binary (.bin) — ignored by RS 2.2' },
                     ]}
                   />
                 </Row>
@@ -822,6 +822,17 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                       { value: 'mcmc', label: 'MCMC' },
                       { value: 'igs+', label: 'IGS+' },
                     ]}
+                  />
+                </Row>
+                <Row
+                  label="Max gaussians"
+                  hint="--max-cap, the hard ceiling on the splat count: MRNF prunes down to it and MCMC targets it. 0 sends no flag and leaves it to the build, which caps at 2,000,000 — a 30k-iteration run on a 300-image scene reaches that exactly, so this is the knob for more detail. It is also LichtFeld Studio's own first suggestion when it runs out of VRAM."
+                >
+                  <NumField
+                    value={draft.lfs.max_gaussians}
+                    step={100000}
+                    min={0}
+                    onChange={(v) => patch('lfs', 'max_gaussians', v)}
                   />
                 </Row>
                 <Row label="Evaluation pass">

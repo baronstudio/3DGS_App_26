@@ -101,6 +101,8 @@ export type LFSStrategy = 'default' | 'mcmc' | 'mrnf' | 'igs+';
 export interface LFSSettingsType {
   iterations: number;
   strategy: LFSStrategy;
+  /** --max-cap. 0 sends no flag and leaves the ceiling to the build (2 M in v0.5.3). */
+  max_gaussians: number;
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
@@ -212,6 +214,7 @@ export interface AlignmentReport {
 export interface LFSDefaults {
   iterations: number;
   strategy: LFSStrategy;
+  max_gaussians: number;
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;

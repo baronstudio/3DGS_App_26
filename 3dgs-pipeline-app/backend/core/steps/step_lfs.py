@@ -6,6 +6,7 @@ from pathlib import Path
 from backend.core.config import app_config
 from backend.core.defaults import LFSDefaults, load_defaults
 from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.steps import colmap_dataset
 
 # Everything the exe prints is wrapped in SGR colour codes; they are noise in
 # the LiveLog and they break any level classification done on the text.
@@ -27,8 +28,34 @@ def resolve_lfs_settings(settings: dict) -> LFSDefaults:
     return LFSDefaults.model_validate({**base, **patch})
 
 
+def resolve_dataset(project_path: Path) -> dict:
+    """Which of step 3's two datasets to train on, and why.
+
+    LichtFeld Studio picks its loader from what it finds under `-d`, and the two
+    are not equivalent. The COLMAP export carries **one intrinsic per image**;
+    the NeRF `transforms.json` carries one, at the top level, for all of them
+    (`Width/height not in transforms.json, reading from first image`). RS
+    undistorts every frame to its own size - measured on riverbed_002-v2, frame
+    0 is 1523x1129 at fl 729.86 and frame 1 is 1525x1136 at fl 728.25, against a
+    hoisted median of 1521x1136 at 721.30 - so on the NeRF path all 300 cameras
+    train through intrinsics wrong by a few pixels, each in a different
+    direction. The optimiser cannot reconcile the rays and the result is the
+    incomplete reconstruction with exploded splat shells.
+
+    Both land in the same world frame, so nothing downstream cares which was
+    used: `rc.colmap.scene_rotate_x_deg = 180` composes RS's template rotation
+    back to where LFS's NeRF loader would have put it (CLAUDE.md 7.3).
+
+    Returns {"path", "kind": "colmap"|"nerf", "colmap": <inspect report>}.
+    """
+    dataset, report = colmap_dataset.find_dataset(project_path)
+    if report["found"]:
+        return {"path": dataset, "kind": "colmap", "colmap": report}
+    return {"path": project_path / "rc_output", "kind": "nerf", "colmap": report}
+
+
 def build_lfs_command(
-    lfs_exe: Path, rc_output: Path, lfs_output: Path, lfs: LFSDefaults
+    lfs_exe: Path, dataset_dir: Path, lfs_output: Path, lfs: LFSDefaults
 ) -> list[str]:
     """The v0.5.3 command line for one training run.
 
@@ -41,12 +68,17 @@ def build_lfs_command(
         str(lfs_exe),
         "--headless",
         "--train",
-        "-d", str(rc_output),
+        "-d", str(dataset_dir),
         "-o", str(lfs_output),
         "-i", str(lfs.iterations),
     ]
     if lfs.strategy in _STRATEGIES:
         cmd += ["--strategy", lfs.strategy]
+    # 0 means "leave it to the build", like strategy "default" - the cap is
+    # 2 000 000 in v0.5.3 and that is the build's business, not a number worth
+    # freezing here.
+    if lfs.max_gaussians > 0:
+        cmd += ["--max-cap", str(lfs.max_gaussians)]
     if lfs.eval:
         cmd.append("--eval")
         if not lfs.save_eval_images:
@@ -75,12 +107,30 @@ async def run_lfs(project_path: Path, broadcast_fn, settings: dict) -> dict:
             "then set lfs_exe_path in Settings."
         )
 
-    rc_output = project_path / "rc_output"
     lfs_output = project_path / "lfs_output"
     lfs_output.mkdir(exist_ok=True)
 
+    dataset = resolve_dataset(project_path)
+    report = dataset["colmap"]
+    if dataset["kind"] == "colmap":
+        await broadcast_fn(
+            "lfs", "INFO",
+            f"[LFS] Training on the COLMAP dataset "
+            f"{Path(dataset['path']).name}/ - {report['cameras']} cameras, "
+            f"{report['images']} images, one intrinsic per image.",
+        )
+    else:
+        await broadcast_fn(
+            "lfs", "WARNING",
+            f"[LFS] No COLMAP dataset in rc_output ({report['reason']}) - "
+            f"training on the NeRF transforms.json instead. Its intrinsics are "
+            f"a single median for every image, and RealityScan crops each of "
+            f"them differently, so expect an incomplete reconstruction. Re-run "
+            f"step 3 with the COLMAP export enabled to fix it.",
+        )
+
     lfs = resolve_lfs_settings(settings)
-    cmd = build_lfs_command(lfs_exe, rc_output, lfs_output, lfs)
+    cmd = build_lfs_command(lfs_exe, Path(dataset["path"]), lfs_output, lfs)
     await broadcast_fn("lfs", "INFO", f"[LFS] Launching: {' '.join(cmd)}")
 
     loop = asyncio.get_running_loop()
@@ -136,7 +186,12 @@ async def run_lfs(project_path: Path, broadcast_fn, settings: dict) -> dict:
         f"[LFS] Training complete - {splats[-1].name}.",
         progress=1.0,
     )
-    return {"lfs_output": str(lfs_output), "splat": str(splats[-1])}
+    return {
+        "lfs_output": str(lfs_output),
+        "splat": str(splats[-1]),
+        "dataset": str(dataset["path"]),
+        "dataset_kind": dataset["kind"],
+    }
 
 
 async def _iter_output(proc: subprocess.Popen, loop):

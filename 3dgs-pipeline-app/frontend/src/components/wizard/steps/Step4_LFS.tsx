@@ -19,6 +19,8 @@ import type { LFSSettingsType } from '@/types';
 const DEFAULT_LFS: LFSSettingsType = {
   iterations: 30000,
   strategy: 'default',
+  // 0 = no --max-cap flag, the build's own ceiling (2 M in v0.5.3).
+  max_gaussians: 0,
   eval: false,
   save_eval_images: false,
   background_color: '#000000',
@@ -45,10 +47,13 @@ const Step4_LFS: React.FC = () => {
     try {
       // The Advanced panel is the per-project override layer (CLAUDE.md §4);
       // sending {} here made every knob in it decorative.
-      const { iterations, strategy, eval: evalMode,
+      const { iterations, strategy, max_gaussians, eval: evalMode,
         save_eval_images, background_color } = lfsSettings;
       await startPipeline(currentProjectId, 4, {
-        lfs: { iterations, strategy, eval: evalMode, save_eval_images, background_color },
+        lfs: {
+          iterations, strategy, max_gaussians, eval: evalMode,
+          save_eval_images, background_color,
+        },
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to start training';

@@ -65,6 +65,35 @@ const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
         </div>
       </div>
 
+      {/* Max gaussians — --max-cap. 0 sends no flag: MRNF prunes down to the
+          build's own ceiling, 2 M in v0.5.3, which a 30k-iteration run reaches
+          exactly. Raise it for detail, lower it to fit the card — it is LFS's
+          own first suggestion when it runs out of VRAM. */}
+      <div className="space-y-2">
+        <div className="flex justify-between items-center">
+          <Label htmlFor="lfs-max-gaussians">Max gaussians</Label>
+          <span className="text-sm text-cyan-400 font-mono">
+            {settings.max_gaussians > 0
+              ? settings.max_gaussians.toLocaleString()
+              : 'build default'}
+          </span>
+        </div>
+        <input
+          id="lfs-max-gaussians"
+          type="number"
+          min={0}
+          step={100000}
+          value={settings.max_gaussians}
+          onChange={(e) => update('max_gaussians', Number(e.target.value) || 0)}
+          className="h-9 w-full rounded-md border border-slate-700 bg-slate-800 px-3 text-sm text-slate-200"
+        />
+        <p className="text-xs text-slate-500">
+          Hard ceiling on the splat count (<code>--max-cap</code>). 0 leaves it to
+          LichtFeld Studio, which caps at 2,000,000 — raise it for more detail,
+          lower it if training runs out of VRAM.
+        </p>
+      </div>
+
       <Separator className="bg-slate-700/50" />
 
       {/* Strategy */}

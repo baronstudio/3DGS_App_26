@@ -85,6 +85,15 @@ COLMAP_WRITER = "RealityScan.Export.COLMAP"
 # the obvious counterparts and are the first thing to check when the export
 # comes out unlike what was asked for — see `verify_against_saved_params()`.
 _DIR_STRUCTURE = {"standard": "CDS_STANDARD", "flat": "CDS_FLAT"}
+# `CFT_BIN` is known to be wrong and kept only so the mapping stays complete:
+# asking for it produced a *text* model on RealityScan 2.2. Every file of the
+# install was searched for a `CFT_`/`CDS_`/`CME_` token and the only three that
+# exist are `CFT_TXT`, `CDS_STANDARD` and `CME_EXT` - the three defaults, which
+# sit consecutively in the string table right after their key names. The
+# counterparts are not in the binary at all, so the real spelling cannot be
+# recovered from it; `defaults.json` therefore asks for ascii, which is what RS
+# writes either way, and `step_rc.check_colmap_export` reports the mismatch if
+# anything asks for binary.
 _FILE_TYPE = {"binary": "CFT_BIN", "ascii": "CFT_TXT"}
 _MASK_EXTENSION = {"ext": "CME_EXT", "mask_ext": "CME_MASK_EXT"}
 # No UFM_/URM_ tokens exist in the string table, unlike the colmap* families:

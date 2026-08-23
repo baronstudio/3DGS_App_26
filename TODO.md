@@ -6,7 +6,7 @@ a row in CLAUDE.md §12 in the same commit.
 
 ---
 
-## P1 — COLMAP export at the end of step 3
+## ~~P1 — COLMAP export at the end of step 3~~ — DONE 2026-08-23
 
 **Goal:** step 3 leaves `rc_output/` in the dataset layout LichtFeld Studio reads
 best, so step 4 stops depending on the NeRF `transforms.json` path.
@@ -15,17 +15,28 @@ Target layout, next to the existing exports:
 
 ```
 projects/<slug>/rc_output/
-├── images/                 # the aligned frames, as fed to RS
-├── sparse/0/
-│   ├── cameras.{bin|txt}   # intrinsics
-│   ├── images.{bin|txt}    # extrinsics, one entry per registered camera
-│   └── points3D.{bin|txt}  # the sparse cloud — LFS uses it to seed the gaussians
+├── <slug>_COLMAP/          # ← the dataset, in a folder of its own
+│   ├── images/             # the aligned frames, undistorted by RS
+│   └── sparse/0/
+│       ├── cameras.txt     # intrinsics — one camera per image, the whole point
+│       ├── images.txt      # extrinsics, one entry per registered camera
+│       └── points3D.txt    # the sparse cloud — LFS seeds the gaussians from it
 ├── transforms.json         # kept: the coverage check and the viewer read it
+├── 00000.png…              # the NeRF export's own undistorted copies
 ├── pointcloud.ply
 └── alignment_check.json
 ```
 
-LFS is then invoked with `-d <rc_output>` unchanged — same flag, better dataset.
+**The subfolder is not tidiness.** The layout above originally put `images/` and
+`sparse/0/` directly in `rc_output/`, where the NeRF export's `00000.png…` have
+the same basenames — and LFS refuses the whole dataset for it
+(`COLMAP dataset contract violation: image '…' is ambiguous under '…'`). The
+copy that trained correctly by hand was `rc_output/` with the top-level PNGs
+deleted.
+
+LFS is then invoked with `-d <rc_output>/<slug>_COLMAP` — step 4 resolves it
+itself (`core/steps/colmap_dataset.py`) and falls back to `-d <rc_output>` with
+a warning when there is no COLMAP dataset to be found.
 
 **Route decided 2026-08-21: native RS export.** RealityScan 2.2 registers the
 exporter in its own `calibration.xml` (format `{280B11A4-…}`,
@@ -41,30 +52,38 @@ LFS's COLMAP loader passes through where its NeRF loader would have cancelled it
 `rc.colmap.scene_rotate_x_deg = 180` composes that back to `Rx-90` so the trained
 splat stays the way up it is today.
 
-**Still open — this is what remains of P1:**
+**What a real RS run settled (riverbed_002-v2, 2026-08-23):** the
+`<Configuration><entry key=…>` params file loads and the export runs —
+`sparse/0/cameras.txt` carries 300 cameras for 300 images, against the single
+top-level intrinsic the NeRF path gives all of them. That difference is the
+whole bug: RS crops every undistorted image to its own size (frame 0
+1523×1129 at fl 729.86, frame 1 1525×1136 at fl 728.25, hoisted median
+1521×1136 at 721.30), so the NeRF route trains 300 cameras through intrinsics
+that are wrong in a different direction each, and the reconstruction comes out
+incomplete with exploded splat shells.
 
-- **Nothing has been run against real RealityScan yet.** The parameter *names*
-  are RS's (recovered from the executable's string table: `colmapDirStructure`,
-  `colmapFileType`, `colmapPointFiltering`, `colmapExportMasks`,
-  `colmapMaskExtension`, the `undist*` family, `MvsExportRotationX`), but only
-  `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` appear literally — `CDS_FLAT`,
-  `CFT_BIN`, `CME_MASK_EXT`, `UFM_*` and `URM_*` are inferred, as is the
-  `<format><parameter variable= value=>` wrapper. Save the settings out of RS's
-  export dialog once and run `rc_export_params.verify_against_saved_params()`
-  against it; that one file settles all of it.
-- **Step 4 does not say which dataset it trained on.** LFS switches from NeRF to
-  COLMAP silently; until it is logged, a half-written `sparse/0/` is invisible.
+`transforms.json` is kept — the coverage check, `cameras.py` and the viewer all
+read it, and it is the fallback when the COLMAP export fails.
 
-**Acceptance:**
-- A real RS run produces `sparse/0/` and passes a re-import check.
-- The converter is covered by the round-trip test above.
-- Only frames present in the exported registration are written — the split
-  reported by `alignment_check.json` must not reappear as broken camera entries.
-- Step 4 trains from the COLMAP dataset with no change to its CLI flags.
+**Still open, and no longer blocking:**
 
-**Open question for JB:** keep `transforms.json` as well (cheap, and the
-coverage check, `cameras.py` and the viewer all read it), or drop it once COLMAP
-works? Default: keep both.
+- **The enum tokens are still unverified, except `colmapFileType`, which is now
+  known to be wrong.** Every file of the RealityScan 2.2 install was searched:
+  `CDS_STANDARD`, `CFT_TXT` and `CME_EXT` are the only tokens of their families
+  anywhere in the build, so `CDS_FLAT`, `CFT_BIN` and `CME_MASK_EXT` cannot be
+  recovered from it — asking for `CFT_BIN` writes text, and the default is now
+  `ascii` with a mismatch warning (decisions log, 2026-08-23). Saving the
+  settings out of RS's export dialog once and running
+  `rc_export_params.verify_against_saved_params()` against that file is still
+  the one thing that would settle the rest.
+- **`export_masks` and `directory_structure: flat` have never been exercised**,
+  for the same reason: their tokens are guesses.
+
+**Acceptance — met:**
+- A real RS run produces `sparse/0/` with one camera per image. ✅
+- Step 4 trains from the COLMAP dataset, and says so in the log; a missing
+  dataset is a warning at step 3 *and* at step 4, never a silent fallback. ✅
+- A re-alignment no longer leaves the previous run's frames in `rc_output/`. ✅
 
 ---
 

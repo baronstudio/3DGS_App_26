@@ -7,6 +7,8 @@ from typing import Optional
 from backend.core.config import app_config
 from backend.core.defaults import RCDefaults, _deep_merge, load_defaults
 from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.project_ops import reset_steps
+from backend.core.steps import colmap_dataset
 from backend.core.steps.rc_export_params import build_colmap_export_params
 from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
@@ -41,7 +43,9 @@ def resolve_rc_settings(settings: dict) -> RCDefaults:
 
 # -- Generated .rscmd --------------------------------------------------------
 
-def build_rscmd(frames_dir: Path, rc_output: Path, rc: RCDefaults) -> Path:
+def build_rscmd(
+    frames_dir: Path, rc_output: Path, colmap_dir: Path, rc: RCDefaults
+) -> Path:
     """Write the script RealityScan executes and return its path.
 
     Generated per run instead of shipped as a static file: `-mergeComponents` is
@@ -67,16 +71,21 @@ def build_rscmd(frames_dir: Path, rc_output: Path, rc: RCDefaults) -> Path:
 
     # The COLMAP dataset, written next to the NeRF one rather than instead of
     # it: the coverage check, the camera overlay and the preview all read
-    # transforms.json, and LichtFeld Studio prefers COLMAP over it unprompted
-    # ("COLMAP dataset detected" is probed before "Blender/NeRF dataset
-    # detected"). With directory_structure "standard" RC writes images/ and
-    # sparse/0/ itself, which is the layout that loader looks for first.
+    # transforms.json, while step 4 trains on this one. With
+    # directory_structure "standard" RC writes images/ and sparse/0/ itself,
+    # which is the layout the LFS loader looks for first.
+    #
+    # It goes in a subdirectory of its own because the two exports collide
+    # otherwise: the NeRF one drops its undistorted `00000.png`… beside
+    # transforms.json and this one writes the same names under images/, which
+    # LFS refuses as an ambiguous basename (colmap_dataset.py).
     if rc.colmap.enabled:
         params = build_colmap_export_params(
             rc.colmap, rc_output / "colmap_export_params.xml"
         )
+        colmap_dir.mkdir(parents=True, exist_ok=True)
         lines.append(
-            f'-exportRegistration "{rc_output / "colmap.txt"}" "{params}"'
+            f'-exportRegistration "{colmap_dir / "colmap.txt"}" "{params}"'
         )
 
     lines.append("-quit")
@@ -334,6 +343,76 @@ async def check_alignment_coverage(
         return {"checked": False, "reason": str(exc)}
 
 
+# -- COLMAP export check -----------------------------------------------------
+
+async def check_colmap_export(
+    project_path: Path, rc: RCDefaults, broadcast_fn
+) -> dict:
+    """Did the COLMAP dataset step 4 wants to train on actually get written?
+
+    RealityScan can skip an export without failing the run: a bad export-params
+    file is `[err:5617]` on stderr and exit code 0. Nothing checked, so step 4
+    fell back to the NeRF dataset in silence - which trains all the cameras
+    through one hoisted median intrinsic where RS cropped every undistorted
+    image differently, and produces the incomplete reconstruction with exploded
+    shells this check exists to explain.
+
+    Warns, never fails: transforms.json is still a trainable dataset, and which
+    of the two to run is step 4's call (and the user's), not a reason to sink a
+    good alignment.
+    """
+    dataset = colmap_dataset.colmap_dataset_dir(project_path)
+    report = colmap_dataset.inspect(dataset)
+    report["requested"] = rc.colmap.enabled
+
+    if not rc.colmap.enabled:
+        return report
+
+    if not report["found"]:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] The COLMAP export was requested but nothing usable came out "
+            f"of it ({report['reason']}). Step 4 will fall back to "
+            f"transforms.json, whose intrinsics are one median for every image "
+            f"- look for an export error above, and check the settings in "
+            f"rc_output/colmap_export_params.xml.",
+        )
+        return report
+
+    # One camera for the whole set means the export ran but collapsed the
+    # calibration, which is the very thing this route is taken to avoid.
+    if report["cameras"] <= 1:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] COLMAP dataset written with {report['cameras']} camera for "
+            f"{report['images']} images - RS undistorts each image to its own "
+            f"size, so one shared intrinsic is the failure the NeRF path "
+            f"already has.",
+        )
+    else:
+        await broadcast_fn(
+            "rc", "SUCCESS",
+            f"[RS] COLMAP dataset ready in {dataset.name}/ - "
+            f"{report['cameras']} cameras, {report['images']} images, "
+            f"{report['file_type']} model"
+            f"{'' if report['points3d'] else ', no points3D (LFS will seed randomly)'}.",
+        )
+
+    # The file type is not validated by RS when the params file is read: a token
+    # it does not know is ignored rather than refused, so the only place a wrong
+    # one shows up is here (rc_export_params.py).
+    if report["file_type"] != rc.colmap.file_type:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] COLMAP model asked for as {rc.colmap.file_type} and written "
+            f"as {report['file_type']} - RealityScan ignored the requested "
+            f"colmapFileType token. Harmless (LFS reads both), but the ASCII "
+            f"model is several hundred megabytes per run.",
+        )
+
+    return report
+
+
 # ── RC runner ───────────────────────────────────────────────────────────────
 
 async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
@@ -353,10 +432,24 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     frames_dir = project_path / "frames"
     rc_output = project_path / "rc_output"
+
+    # A re-alignment is a reset of step 3, for the same reason a re-extraction
+    # is a reset of step 2: RS writes into rc_output/ without clearing it, so a
+    # 300-frame run over a previous 653-frame one left 353 orphaned PNGs behind
+    # - stale cameras for the coverage check, and duplicate basenames for the
+    # LFS loader. Done after the exe is located, so a misconfigured path does
+    # not cost the alignment already on disk.
+    removed = reset_steps(project_path, [3])
+    if removed:
+        await broadcast_fn(
+            "rc", "INFO",
+            f"[RS] Cleared the previous alignment ({', '.join(removed)}).",
+        )
     rc_output.mkdir(exist_ok=True)
 
     rc = resolve_rc_settings(settings)
-    script = build_rscmd(frames_dir, rc_output, rc)
+    colmap_dir = colmap_dataset.colmap_dataset_dir(project_path)
+    script = build_rscmd(frames_dir, rc_output, colmap_dir, rc)
     await broadcast_fn(
         "rc", "INFO",
         "[RS] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
@@ -399,11 +492,12 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     await broadcast_fn("rc", "INFO", "[RS] Alignment complete - checking coverage.")
     coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
+    colmap = await check_colmap_export(project_path, rc, broadcast_fn)
 
     aligned = coverage.get("aligned_count")
     tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
     await broadcast_fn("rc", "SUCCESS", f"[RS] Step complete{tail}.", progress=1.0)
-    return {"rc_output": str(rc_output), "alignment": coverage}
+    return {"rc_output": str(rc_output), "alignment": coverage, "colmap": colmap}
 
 
 async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:

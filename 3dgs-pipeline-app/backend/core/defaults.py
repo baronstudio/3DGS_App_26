@@ -175,10 +175,16 @@ class ColmapExportDefaults(BaseModel):
     # everything in one directory; LFS copes ("Detected flat structure - using
     # root directory for images") but nothing else does.
     directory_structure: Literal["standard", "flat"] = "standard"
-    # LFS prefers binary when both are present ("Found both binary and text
-    # COLMAP files. Prioritizing binary files."), and points3D in ASCII is a
-    # couple of hundred megabytes for a real alignment.
-    file_type: Literal["binary", "ascii"] = "binary"
+    # ASCII, because it is the only value this RealityScan build demonstrably
+    # honours. Binary would be the better one - LFS prefers it when both are
+    # present ("Found both binary and text COLMAP files. Prioritizing binary
+    # files.") and the text model is ~110 MB per run against a few tens - but
+    # `CFT_BIN` is a guess: `CFT_TXT` is the only token of the family present
+    # anywhere in RealityScan 2.2, and a token RS does not know is ignored
+    # rather than refused, so asking for binary silently produced text. Step 3
+    # now compares what was written against what was asked (`check_colmap_export`),
+    # so the day the real token turns up this becomes a one-line change.
+    file_type: Literal["binary", "ascii"] = "ascii"
     # Tie points RC flagged weak, ill-conditioned or outlier. They seed the
     # gaussians, so a cleaner cloud is worth more here than a bigger one.
     exclude_unreliable_tie_points: bool = True
@@ -233,6 +239,18 @@ class LFSDefaults(BaseModel):
     iterations: int = 30000
     # v0.5.3 strategies; "default" sends no flag and lets the build pick (MRNF).
     strategy: Literal["default", "mcmc", "mrnf", "igs+"] = "default"
+    # `--max-cap` - the hard ceiling on the number of gaussians, enforced by
+    # MRNF (`MRNF: count {} exceeds max_cap {}, pruning excess`) and the budget
+    # MCMC targets. 0 sends no flag and leaves it to the build, the same
+    # convention as `strategy: "default"`, because the value is the build's to
+    # change: v0.5.3 caps at 2 000 000, which the 30 000-iteration run on
+    # riverbed_002-v2 hit exactly.
+    #
+    # It is also LFS's own first suggestion when it runs out of VRAM ("CUDA out
+    # of memory: failed to allocate {} bytes. Try reducing max_cap, sh_degree,
+    # or image resolution"), so it is a ceiling in both directions: raise it for
+    # detail on a big scene, lower it to fit the card.
+    max_gaussians: int = 0
     eval: bool = False
     save_eval_images: bool = False
     background_color: str = "#000000"

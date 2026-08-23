@@ -31,7 +31,7 @@
         "colmap": {
             "enabled": true,
             "directory_structure": "standard",
-            "file_type": "binary",
+            "file_type": "ascii",
             "exclude_unreliable_tie_points": true,
             "export_masks": false,
             "mask_extension": "mask_ext",
@@ -58,6 +58,7 @@
     "lfs": {
         "iterations": 30000,
         "strategy": "default",
+        "max_gaussians": 0,
         "eval": false,
         "save_eval_images": false,
         "background_color": "#000000"
