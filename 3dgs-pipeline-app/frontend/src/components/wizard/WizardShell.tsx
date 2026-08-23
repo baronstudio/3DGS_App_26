@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useState } from 'react';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import AppTitle from '@/components/AppTitle';
 import { AlertTriangle, BookOpen, ChevronRight, FolderOpen, Home, PanelBottomClose, PanelBottomOpen, PanelRightClose, PanelRightOpen, Plus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -76,7 +77,7 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
   return (
     <div className="flex flex-col h-screen bg-slate-900 text-slate-100">
       {/* TOP BAR */}
-      <header className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
+      <header className="relative flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700 shrink-0">
         <div className="flex items-center gap-2 text-sm font-medium">
           {/* Back to home */}
           {(onBackToHome || true) && (
@@ -125,6 +126,9 @@ const WizardShell: React.FC<{ onBackToHome?: () => void }> = ({ onBackToHome }) 
           <ChevronRight className="w-4 h-4 text-slate-500" />
           <span style={{ color: '#00D4FF' }}>Step {currentStep}/6</span>
         </div>
+
+        {/* App name + version, centred over the bar */}
+        <AppTitle />
         <div className="flex items-center gap-2">
           {/* Application setup (defaults for every wizard step) */}
           <Button

@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import file_handles, websocket
-from backend.api.routes import defaults, files, pipeline, projects, settings
+from backend.api.routes import defaults, files, pipeline, projects, settings, version
 from backend.core.pipeline_runner import reconcile_orphaned_steps
 from backend.db.database import create_db_and_tables
 
@@ -49,6 +49,7 @@ app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(defaults.router, prefix="/api/defaults", tags=["defaults"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
+app.include_router(version.router, prefix="/api/version", tags=["version"])
 app.include_router(websocket.router)
 
 # The viewer previews are binary; unknown extensions are served as text/plain,

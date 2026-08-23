@@ -384,6 +384,7 @@ GET    /api/defaults/                  defaults.json (business defaults)
 PUT    /api/defaults/                  deep-merge update
 POST   /api/defaults/reset             factory reset (optional ?section=)
 GET    /api/defaults/presets           capture presets
+GET    /api/version/                  app name, version (commit date) and commit id
 GET    /api/files/{project}/frames     frame list + curation verdicts
 GET    /api/files/{project}/analysis   scores.json + selection.json + overrides
 GET    /api/files/{project}/probe      ffprobe metadata of the source video
