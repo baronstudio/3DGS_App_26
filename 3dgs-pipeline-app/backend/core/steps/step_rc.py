@@ -6,7 +6,13 @@ from typing import Optional
 
 from backend.core.config import app_config
 from backend.core.defaults import RCDefaults, _deep_merge, load_defaults
-from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.proc import (
+    ProcessAborted,
+    iter_lines,
+    kill_tree,
+    release,
+    spawn,
+)
 from backend.core.project_ops import reset_steps
 from backend.core.steps import colmap_dataset
 from backend.core.steps.rc_export_params import build_colmap_export_params
@@ -464,14 +470,13 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     # launches workers of its own, so only a tree kill frees the GPU (core/proc.py).
     proc = spawn(cmd, project_path)
 
+    # RealityScan.exe is a GUI-subsystem binary (PE subsystem 2), so it has no
+    # console of its own and prints nothing here unless the script asks it to -
+    # this loop normally sees a single EOF when the process exits. It reads
+    # through iter_lines all the same: what RS does write, it redraws with a
+    # bare CR like every other tool in this pipeline (CLAUDE.md 15.1).
     try:
-        while True:
-            raw = await loop.run_in_executor(None, proc.stdout.readline)
-            if not raw:
-                break
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
+        async for line in iter_lines(proc, loop):
             await broadcast_fn("rc", _classify_rc_line(line), line)
 
         returncode = await loop.run_in_executor(None, proc.wait)

@@ -61,6 +61,7 @@ export interface WsMessage {
     psnr?: number;
     num_gaussians?: number;
     iter_per_sec?: number;
+    elapsed_s?: number;
   };
   file?: string;
 }
@@ -73,11 +74,14 @@ export interface LogEntry {
   message: string;
 }
 
+// Partial on purpose: LichtFeld Studio v0.5.3 prints the loss and the gaussian
+// count on its training bar and PSNR only on the evaluation line an `--eval` run
+// produces, so a point rarely holds all four (store/pipelineStore.ts).
 export interface LfsMetric {
   iteration: number;
-  loss: number;
-  psnr: number;
-  num_gaussians: number;
+  loss?: number;
+  psnr?: number;
+  num_gaussians?: number;
 }
 
 export interface ExportFile {

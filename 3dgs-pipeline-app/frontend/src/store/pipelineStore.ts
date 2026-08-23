@@ -93,7 +93,85 @@ const stepNameToIndex: Record<StepName, number> = {
   blender: 6,
 };
 
+// The training chart is fed by whatever LichtFeld Studio prints, which is a bar
+// redrawn every hundred iterations — a 30 000-iteration run is 300 points, but
+// a build that redraws more often must not be able to hand recharts tens of
+// thousands. Over the cap the series is halved, which keeps the whole range at
+// half the resolution instead of dropping its head or its tail.
+const MAX_METRIC_POINTS = 800;
+
 let logCounter = 0;
+
+/** Move a step's bar, and close the step out when the runner reports 1.0. */
+function applyProgress(state: PipelineState, msg: WsMessage): void {
+  const progress = msg.progress;
+  if (progress === undefined) return;
+
+  if (msg.step === 'project') {
+    // Not a wizard step: the file operations report here, and only the modal
+    // cares.
+    if (state.projectOp) {
+      state.projectOp.progress = progress;
+      if (msg.message) state.projectOp.message = msg.message;
+    }
+    return;
+  }
+
+  state.stepProgress[msg.step] = progress;
+
+  // progress = 1.0 means the step runner finished — a fallback for messages
+  // that carry progress but no explicit status field.
+  if (progress < 1.0) return;
+  const stepIdx = stepNameToIndex[msg.step as StepName];
+  if (stepIdx === undefined || state.stepStatuses[stepIdx] !== 'running') return;
+  const level = msg.level ?? 'SUCCESS';
+  if (level !== 'SUCCESS' && level !== 'INFO') return;
+
+  state.stepStatuses[stepIdx] = 'done';
+  state.pipelineRunning = false;
+  console.debug(
+    `[WIZARD-DEBUG] progress=1.0 on step ${msg.step}(${stepIdx})`
+    + ' → stepStatuses set to done, pipelineRunning=false',
+  );
+}
+
+/** Fold one parsed LichtFeld Studio line into the training series.
+ *
+ * Partial by design. v0.5.3 spreads the numbers over two different lines —
+ * `Training […] 100/300 | Loss: 0.1391 | Splats: 281029` carries the iteration,
+ * the loss and the gaussian count, while PSNR appears only on the
+ * `[Evaluation at step N] PSNR: …` line an `--eval` run prints. Requiring all
+ * four at once, as this did, meant no point ever qualified and the chart stayed
+ * empty for every run. So a message contributes what it has: same iteration as
+ * the last point merges into it, a new one appends, and a field nobody reported
+ * stays undefined rather than being invented — recharts draws no line for a
+ * series that is never present, which is the honest picture of a run with no
+ * evaluation.
+ */
+function applyMetric(state: PipelineState, data: NonNullable<WsMessage['data']>): void {
+  const num = (v: number | undefined) =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+
+  const loss = num(data.loss);
+  const psnr = num(data.psnr);
+  const numGaussians = num(data.num_gaussians);
+  if (loss === undefined && psnr === undefined && numGaussians === undefined) return;
+
+  const last = state.lfsMetrics[state.lfsMetrics.length - 1];
+  const iteration = num(data.iteration) ?? last?.iteration ?? 0;
+
+  if (last && last.iteration === iteration) {
+    if (loss !== undefined) last.loss = loss;
+    if (psnr !== undefined) last.psnr = psnr;
+    if (numGaussians !== undefined) last.num_gaussians = numGaussians;
+    return;
+  }
+
+  state.lfsMetrics.push({ iteration, loss, psnr, num_gaussians: numGaussians });
+  if (state.lfsMetrics.length > MAX_METRIC_POINTS) {
+    state.lfsMetrics = state.lfsMetrics.filter((_, i) => i % 2 === 0);
+  }
+}
 
 export const usePipelineStore = create<PipelineState>()(
   immer((set) => ({
@@ -249,6 +327,16 @@ export const usePipelineStore = create<PipelineState>()(
     // WebSocket message dispatcher
     handleWsMessage: (msg) =>
       set((state) => {
+        // Progress is read before the switch, whatever the message was typed
+        // as. A message legitimately carries a metric *and* a progress value —
+        // LichtFeld Studio sends both on every training-bar line — and
+        // `websocket.py` picks the type by priority, testing `data` before
+        // `progress`, so those arrive as `metric` and the bar never moved.
+        // Fixing it here rather than reordering the priority: the type says
+        // what the message is mainly about, and it should not decide whether a
+        // number that is present gets used.
+        if (msg.progress !== undefined) applyProgress(state, msg);
+
         switch (msg.type) {
           case 'log': {
             if (msg.step === 'project' && state.projectOp && msg.message) {
@@ -267,54 +355,11 @@ export const usePipelineStore = create<PipelineState>()(
             }
             break;
           }
-          case 'progress': {
-            if (msg.step === 'project') {
-              // Not a wizard step: the file operations report here, and only
-              // the modal cares.
-              if (state.projectOp) {
-                if (msg.progress !== undefined) state.projectOp.progress = msg.progress;
-                if (msg.message) state.projectOp.message = msg.message;
-              }
-              break;
-            }
-            if (msg.progress !== undefined) {
-              state.stepProgress[msg.step] = msg.progress;
-              // progress=1.0 means the step runner completed — update status
-              // (fallback for messages that carry progress but no explicit status field)
-              if (msg.progress >= 1.0) {
-                const stepIdx = stepNameToIndex[msg.step as StepName];
-                if (stepIdx !== undefined && state.stepStatuses[stepIdx] === 'running') {
-                  const lvl = msg.level ?? 'SUCCESS';
-                  if (lvl === 'SUCCESS' || lvl === 'INFO') {
-                    state.stepStatuses[stepIdx] = 'done';
-                    state.pipelineRunning = false;
-                    console.debug(
-                      `[WIZARD-DEBUG] progress=1.0 on step ${msg.step}(${stepIdx})`
-                      + ' → stepStatuses set to done, pipelineRunning=false',
-                    );
-                  }
-                }
-              }
-            }
+          case 'progress':
+            // Already applied above, for every message type at once.
             break;
-          }
           case 'metric': {
-            if (msg.data) {
-              const d = msg.data;
-              if (
-                d.iteration !== undefined &&
-                d.loss !== undefined &&
-                d.psnr !== undefined &&
-                d.num_gaussians !== undefined
-              ) {
-                state.lfsMetrics.push({
-                  iteration: d.iteration,
-                  loss: d.loss,
-                  psnr: d.psnr,
-                  num_gaussians: d.num_gaussians,
-                });
-              }
-            }
+            if (msg.data) applyMetric(state, msg.data);
             break;
           }
           case 'status': {

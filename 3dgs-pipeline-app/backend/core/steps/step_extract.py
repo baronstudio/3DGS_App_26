@@ -2,14 +2,32 @@ import asyncio
 import json
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from backend.core.config import app_config
 from backend.core.defaults import ExtractDefaults, load_defaults, resolve_extract_fps
-from backend.core.proc import ProcessAborted, kill_tree, release, spawn
+from backend.core.proc import (
+    ProcessAborted,
+    iter_lines,
+    kill_tree,
+    release,
+    spawn,
+)
 from backend.core.project_ops import reset_steps
 from backend.core.probe import probe_video
+
+# One line of an FFmpeg `-progress` block: a bare lowercase key, then a value
+# with no space in it. The value has to be anchored, because FFmpeg's own
+# end-of-run summary — `frame=   20 fps=1.2 q=5.0 time=… speed=0.235x` — starts
+# with `frame=` too, and it belongs in the log rather than in a progress block.
+# Everything else on the pipe (the banner, the stream mapping, an error) is
+# logged as it always was.
+_PROGRESS_FIELD = re.compile(r"^([a-z0-9_]+)=(\S*)$")
+
+# How often a readable line is written to the LiveLog. The bar itself moves on
+# every block (~2/s); repeating that in the log would push everything else out
+# of a 500-entry buffer within a minute.
+_LOG_EVERY_S = 2.0
 
 
 def resolve_extract_settings(settings: dict) -> ExtractDefaults:
@@ -102,6 +120,82 @@ def _write_extract_meta(
         }, indent=2),
         encoding="utf-8",
     )
+
+
+def _as_int(value: str | None) -> int | None:
+    """An FFmpeg progress integer, or None for the `N/A` it writes before it knows."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def out_time_seconds(fields: dict[str, str]) -> float | None:
+    """Where in the source FFmpeg has read to, in seconds.
+
+    `out_time_us` is the one to read. `out_time_ms` is deliberately skipped even
+    though it is right there: FFmpeg has printed microseconds under that name for
+    years — 8.1.1 writes `out_time_us=200000` and `out_time_ms=200000` for the
+    same 0.2 s — and a build that ever fixed the misnomer would put the bar out
+    by a factor of a thousand. The unambiguous fallback is `out_time` itself,
+    `00:01:23.456789`.
+    """
+    micros = _as_int(fields.get("out_time_us"))
+    if micros is not None and micros >= 0:
+        return micros / 1_000_000.0
+
+    clock = (fields.get("out_time") or "").strip()
+    parts = clock.split(":")
+    if len(parts) == 3:
+        try:
+            h, m, s = parts
+            return int(h) * 3600 + int(m) * 60 + float(s)
+        except ValueError:
+            return None
+    return None
+
+
+def extraction_progress(
+    fields: dict[str, str], duration_s: float | None, max_frames: int
+) -> float | None:
+    """How far the extraction is, from whichever denominator exists.
+
+    Two of them, and the further-along one wins. `out_time` against the source
+    duration is the true position — it is smooth, and it holds whatever the fps
+    policy resolved to. But `max_frames` ends the run early, so a 200-frame cap
+    on a ten-minute source would otherwise crawl to 3 % and stop there.
+
+    Capped just short of 1.0: the store reads progress = 1.0 as "the step is
+    done", and the extraction is not done until the frames are counted and
+    `extract.json` is written.
+    """
+    candidates: list[float] = []
+
+    position = out_time_seconds(fields)
+    if duration_s and position is not None:
+        candidates.append(position / duration_s)
+
+    frame = _as_int(fields.get("frame"))
+    if max_frames > 0 and frame is not None:
+        candidates.append(frame / max_frames)
+
+    if not candidates:
+        return None
+    return max(0.0, min(max(candidates), 0.99))
+
+
+def _progress_summary(fields: dict[str, str], duration_s: float | None) -> str:
+    """The readable half of a progress block, for the LiveLog."""
+    frame = _as_int(fields.get("frame"))
+    position = out_time_seconds(fields)
+    bits = [f"{frame} frames" if frame is not None else "starting"]
+    if position is not None:
+        of = f" / {duration_s:.0f}s" if duration_s else ""
+        bits.append(f"{position:.1f}s{of}")
+    speed = (fields.get("speed") or "").strip()
+    if speed and speed != "N/A":
+        bits.append(speed)
+    return "[FFmpeg] " + " · ".join(bits)
 
 
 async def _clear_previous_run(project_path: Path, broadcast_fn) -> None:
@@ -205,7 +299,14 @@ async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
         )
 
     cmd = [
-        ffmpeg_path, "-i", str(input_video),
+        ffmpeg_path,
+        # The only progress channel worth reading. FFmpeg's stderr `frame= …
+        # time=` line is redrawn with a bare CR and never terminates, so a
+        # readline() regex on it fires once, at exit; `-progress pipe:1` writes
+        # newline-delimited `key=value` blocks to stdout instead, and `-nostats`
+        # silences the redraw it duplicates.
+        "-progress", "pipe:1", "-nostats",
+        "-i", str(input_video),
         "-vf", vf_filter,
         "-qscale:v", str(quality),
     ]
@@ -220,26 +321,48 @@ async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
     # (see core/proc.py).
     proc = spawn(cmd, project_path)
 
-    frame_count = 0
-    ffmpeg_output_lines: list[str] = []
+    duration_s = probe.get("duration_s")
+    if not duration_s and max_frames <= 0:
+        await broadcast_fn(
+            "extract", "WARNING",
+            "[FFmpeg] The source duration is unknown and no frame cap is set — "
+            "the extraction bar has no denominator and will stay indeterminate.",
+        )
 
-    # Stream stdout line-by-line; each readline() blocks in the thread pool.
+    ffmpeg_output_lines: list[str] = []
+    fields: dict[str, str] = {}
+    last_log = 0.0
+
+    # One `-progress` block is a run of `key=value` lines closed by
+    # `progress=continue` (or `progress=end`); everything else on the pipe is
+    # ordinary FFmpeg output. Splitting on CR as well as LF (proc.iter_lines) is
+    # what makes the blocks arrive while the run is still going.
     try:
-        while True:
-            raw = await loop.run_in_executor(None, proc.stdout.readline)
-            if not raw:
-                break
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            ffmpeg_output_lines.append(line)
-            m = re.search(r"frame=\s*(\d+)", line)
-            if m:
-                frame_count = int(m.group(1))
-                progress = (frame_count / max_frames) if max_frames > 0 else None
-                await broadcast_fn("extract", "INFO", line, progress=progress)
-            else:
+        async for line in iter_lines(proc, loop):
+            match = _PROGRESS_FIELD.match(line)
+            if not match:
+                ffmpeg_output_lines.append(line)
                 await broadcast_fn("extract", "INFO", line)
+                continue
+
+            key, value = match.group(1), match.group(2).strip()
+            fields[key] = value
+            if key != "progress":
+                continue
+
+            await broadcast_fn(
+                "extract", "INFO", "",
+                progress=extraction_progress(fields, duration_s, max_frames),
+            )
+
+            # The bar moves on every block; the log gets a line every few
+            # seconds, so the extraction stays readable next to everything else.
+            now = loop.time()
+            if now - last_log >= _LOG_EVERY_S:
+                last_log = now
+                await broadcast_fn(
+                    "extract", "INFO", _progress_summary(fields, duration_s)
+                )
 
         returncode = await loop.run_in_executor(None, proc.wait)
     except asyncio.CancelledError:

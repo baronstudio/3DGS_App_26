@@ -497,6 +497,10 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-23 | **A re-alignment is a reset of step 3.** RealityScan writes into `rc_output/` without clearing it, so a 300-frame run over a previous one left 353 orphaned `00300.png`–`00652.png` behind — stale cameras for the coverage check, and duplicate basenames for the LFS loader now that a COLMAP dataset shares the directory. `run_rc` calls `reset_steps(project_path, [3])` before it writes the `.rscmd`, exactly as `run_extract` resets step 2 (2026-08-22) and for the same reason, and after the exe is located so a misconfigured path does not cost the alignment already on disk. |
 | 2026-08-23 | **`colmapFileType` is asked for as ASCII, because binary cannot be asked for.** `CFT_BIN` was inferred and is wrong: RS wrote a text model every time. Every file of the RealityScan 2.2 install was searched for a `CFT_`/`CDS_`/`CME_` token and the only three that exist are `CFT_TXT`, `CDS_STANDARD` and `CME_EXT` — the three *defaults*, sitting consecutively in the string table right after their key names — so the real spelling of the counterparts is not recoverable from the build. Values are not validated when the params file is read (a token RS does not know is ignored, not refused), which is why this was invisible. The default becomes `ascii`, which is what RS writes either way, and `check_colmap_export` compares the model actually written against the one requested and warns on a mismatch — so the knob starts working the day the token turns up, instead of lying in the meantime. The cost of staying on text is `images.txt` at 73 MB and `points3D.txt` at 36 MB per run. |
 | 2026-08-23 | **Max gaussians is exposed, because this build has a verb for it.** `--max-cap` is in `--help` on v0.5.3 and enforced in the trainer (`MRNF: count {} exceeds max_cap {}, pruning excess`), which is the bar the removed `lr` / `save_interval` / `render_mode` fields failed (2026-08-20). It matters in both directions: the GUI run on `riverbed_002-v2` finished at exactly **2 000 000** gaussians — the build's own ceiling, hit rather than converged to — and it is the first thing LFS suggests when it runs out of VRAM ("Try reducing max_cap, sh_degree, or image resolution"). `0` sends no flag and leaves the ceiling to the build, the same convention as `strategy: "default"`, so the number the app would otherwise freeze stays the build's to change. |
+| 2026-08-23 | **The CR-split line reader is shared, and FFmpeg reports through `-progress`.** `_iter_output` was written for LichtFeld Studio's training bar (2026-08-20) and the same defect was sitting in step 2 and step 3 untouched: `readline()` splits on LF, and FFmpeg redraws `frame= … time=` with a bare CR on a line that never terminates, so the regex fired once, at exit. Three occurrences is where it becomes `proc.iter_lines()`. Step 2's numerator was broken independently — `progress = frame_count / max_frames if max_frames > 0 else None`, and `max_frames` is the optional cap, normally 0, so the value was `None` and the message was typed `log`. It now asks FFmpeg directly: `-progress pipe:1 -nostats` writes newline-delimited `key=value` blocks to stdout twice a second, and `out_time_us` divides into the `duration_s` that `probe.json` has held all along. `max_frames` stays as a second denominator when it is set, whichever is further along, because a 200-frame cap on a ten-minute source would otherwise crawl to 3 % and stop. Capped at 0.99 while running: the store reads 1.0 as "the step is done", and it is not until the frames are counted. Measured end to end on an 88 s 4K source — 0.002 to 0.990, smooth, over 372 s. |
+| 2026-08-23 | **A message's type no longer decides whether its progress is used — and step 4's bar was never parsed to begin with.** `websocket.py` picks `msg_type` by priority and tests `data` before `progress`, so every LichtFeld Studio line, which carries both, went out as `metric`; the store's `metric` case only appended to `lfsMetrics`. The store now reads `progress` above the `switch`, for every type — the priority is right about what a message *is* and has no business deciding which of its fields may be read. That alone would still have moved nothing: measured against a real v0.5.3 headless run, the bar reads `Training […] 66% [00m:01s<00m:00s] 100/300 \| Loss: 0.1391 \| Splats: 281029`, and the iteration regex was anchored with `$` to a line that ends with the splat count, the fallback `iter n/N` form is not printed by this build, and the gaussian count is written `Splats:`, which nothing looked for. The bar's own percentage is not the training's — it read 33 / 66 / 100 % at "Initializing" / 100 / 200 — so the `N/M` pair is the only honest number on the line, mapped onto 5–95 % because a run loads its dataset for 10 s before iteration 1 and writes a checkpoint after the last. Its ETA is derived from that same broken percentage (`00m:00s` remaining at 100/300) and is **not** forwarded; the bar estimates its own. The metric gate is relaxed to match: PSNR exists only on the `[Evaluation at step N]` line an `--eval` run prints, so demanding iteration + loss + psnr + gaussians together meant no point ever qualified and the chart was empty for every run. Fields nobody reported stay `undefined` rather than being carried forward — recharts draws no line for a series that is never present, which is the truth about a run with no evaluation. |
+| 2026-08-23 | **RealityScan reports through `-writeProgress <file> 1`; the log tail and `-printProgress` are both dead ends (§15.3).** `RealityScan.exe` is a GUI-subsystem binary, so the `readline()` loop in `run_rc` blocks until it exits and step 3 has never emitted anything but the final `1.0`. Measured on a real 110-image alignment: `-writeProgress "<file>" 1` writes live, about a line a second, across every task — while the same verb with the documented-looking `1000` created the file and wrote **0 bytes**, which is what made the feature look absent (the delta is in seconds, so 1000 means "never"). `-printProgress` does reach an anonymous pipe despite the missing console, but the CRT full-buffers it into 4 KB flushes and a whole alignment emits ~3 KB — one late update. And `%TEMP%\RealityScan.log` is frozen at the same byte count for the entire reconstruction, so tailing it would have covered every phase except the one that takes 1065 s. The format is `%d %.2f %.2lf %.2lf #%s` — task id, fraction, elapsed, **estimated remaining**, `started`/`progress`/`completed` — with one task per working verb of the `.rscmd`, in order, which is what `rc.progress_weights` will scale. The poller is not written yet; this row records the route so the measurement is not made twice. |
+| 2026-08-23 | **A running step that says nothing for ten seconds gets stripes, not a number.** `ProgressBar` held whatever percentage arrived last, so the phases with no channel at all — PySceneDetect decoding the source video, RealityScan reconstructing, `rc_postprocess` rewriting 142 MB of ASCII PLY — were indistinguishable from a hung app, and its ETA was silent there too (samples are cleared below 5 %, which is exactly where those phases sit). After 10 s without a progress message a running step switches to indeterminate stripes and an elapsed count, keeping the last percentage beside them when there was one: "31 %, and nothing since" is more use than either a frozen bar or no number. The component's own step-name map was also missing `curate`, so step 2's second bar knew no status and never turned green. |
 
 Any new structural decision → add a row here in the same commit.
 
@@ -570,3 +574,77 @@ name `project`, which the store routes to the dialog instead of to
 `stepProgress` (it is not a wizard step). Copy, archive and restore run in a
 worker thread and report every 20 files, plus every file over 8 MB — otherwise a
 project of five 1 GB splats would sit at 0 % until it finished.
+
+---
+
+## 15. Progress reporting — what each tool can actually tell us
+
+A bar that does not move is a bug report the user cannot file. Every step
+reports from a channel that was **measured on this workstation**, not assumed,
+and a phase with no channel says so instead of sitting on a number.
+
+| Step | Channel | Denominator |
+|---|---|---|
+| 2 extract | FFmpeg `-progress pipe:1 -nostats` — `key=value` blocks on stdout, ~2/s | `out_time_us` against `probe.json`'s `duration_s`; `max_frames` too when capped, whichever is further along |
+| 2 curate | `step_analyze._chunked`, every 24 frames | frame count — but flat through phase 1, see §15.4 |
+| 3 RS | RealityScan `-writeProgress <file> 1` (§15.3) — **route decided, poller not written yet** | per-task fraction, one task per working `.rscmd` verb |
+| 4 LFS | the `Training […]` bar, redrawn with a bare CR | the `N/M` pair after the clock, mapped onto 5–95 % |
+
+### 15.1 Three tools, one bug: the carriage return
+
+FFmpeg, LichtFeld Studio and RealityScan all redraw a status line with a bare
+CR, on a line that never terminates. `readline()` splits on LF only, so it hands
+back the whole run as one line, at exit — which is exactly when the progress it
+carries has stopped being useful. `proc.iter_lines()` splits on both and strips
+the SGR escapes; every exe-driven step reads through it. It lives in `proc.py`
+because that was the third place the same defect appeared.
+
+### 15.2 A message's type does not decide whether its progress is used
+
+`websocket.py` picks `msg_type` by priority and tests `data` before `progress`,
+so an LFS line carrying both went out as `metric` — and the store's `metric`
+case never touched `stepProgress`. The store now reads `progress` above the
+`switch`, whatever the type. Reordering the priority would have been the wrong
+fix: a message legitimately carries a metric *and* a position, and the type says
+what it is mainly about, not which of its fields may be read.
+
+### 15.3 RealityScan: the progress file, not the log and not stdout
+
+Three candidate channels, measured on a real 110-image alignment:
+
+| Channel | Result |
+|---|---|
+| `-writeProgress "<file>" 1` | **works.** Written live, ~1 line/s, from the first task to the last |
+| `-writeProgress "<file>" 1000` | file created, **0 bytes** for the whole run — the delta argument is in seconds, so 1000 means "never" |
+| `-printProgress 1000` | reaches the pipe, but the CRT full-buffers it: 4 KB flushes, and a whole alignment emits ~3 KB. One update, late |
+| `%TEMP%\RealityScan.log` | **silent for the entire reconstruction** — frozen at the same byte count from the end of feature detection to the `Reconstruction completed` line |
+
+So the log tail was never going to cover the phase that takes the time, and
+`-printProgress` cannot be flushed from outside the process. The line format is
+`%d %.2f %.2lf %.2lf #%s` — task id, fraction, elapsed s, **estimated remaining
+s**, and `started` / `progress` / `completed`:
+
+```
+65537 0.00 0.01 142.40 #started
+65537 0.41 12.52 18.38 #progress
+65537 1.00 26.14 0.00  #completed
+```
+
+RS emits **one task per working verb** of the generated `.rscmd`, in order —
+`-addFolder`, `-align`, `-exportSparsePointCloud` gave exactly three — which is
+what the phase weights of `rc.progress_weights` will be applied to. The task ids
+are not a stable map (65536, 65537, then 20585): the *ordinal* is.
+
+### 15.4 Where the bars are still flat
+
+- **Curation phase 1** calls `scenes.detect_sequences`, which decodes the whole
+  source video inside one `run_in_executor`. `progress_cb` exists in `scenes.py`
+  but is wired only into the `detect_from_frames` fallback, so the bar holds at
+  0.02 for the longest part of curation and then jumps to 0.25.
+- **`rc_postprocess`** rewrites a 142 MB ASCII PLY and runs the coverage check
+  with no output at all.
+
+Until a phase has a real number, `ProgressBar` is the honest fallback: a step
+that has been `running` for 10 s without a progress message switches to
+indeterminate stripes and an elapsed-time count, rather than holding a
+percentage that stopped meaning anything.

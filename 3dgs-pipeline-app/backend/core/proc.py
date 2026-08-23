@@ -19,13 +19,18 @@ is also what unblocks the reader thread.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import AsyncIterator, Sequence
 
 _IS_WINDOWS = sys.platform == "win32"
+
+# Tools colour their output with SGR escapes; they are noise in the LiveLog and
+# they break any level classification done on the text.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 # project key -> live children of that project's run
 _LIVE: dict[str, set[subprocess.Popen]] = {}
@@ -135,3 +140,37 @@ def kill_project_children(project_path: Path) -> int:
 def live_count(project_path: Path) -> int:
     """How many tools this project currently has running (debug/tests)."""
     return len(_LIVE.get(_key(project_path), ()))
+
+
+async def iter_lines(
+    proc: subprocess.Popen, loop, chunk_size: int = 4096
+) -> AsyncIterator[str]:
+    """Yield clean lines from a child, splitting on CR as well as LF.
+
+    `readline()` splits on LF only, and every tool in this pipeline redraws a
+    status line with a bare carriage return instead: LichtFeld Studio's training
+    bar, FFmpeg's `frame= … time=` stats, and RealityScan's log tail. A plain
+    readline() therefore swallows the whole run into one multi-megabyte "line"
+    that arrives when the process exits — which is exactly when the progress it
+    carries has stopped being useful.
+
+    Lives here rather than in one step because that is the third place the same
+    defect appeared. Each read blocks in the thread pool, so the caller's
+    coroutine is cancellable at the await and the child is killed by
+    `kill_tree`, never by unwinding this generator.
+    """
+    buffer = ""
+    while True:
+        chunk = await loop.run_in_executor(None, proc.stdout.read1, chunk_size)
+        if not chunk:
+            break
+        buffer += chunk.decode("utf-8", errors="replace")
+        parts = re.split(r"[\r\n]", buffer)
+        buffer = parts.pop()
+        for part in parts:
+            line = _ANSI.sub("", part).strip()
+            if line:
+                yield line
+    line = _ANSI.sub("", buffer).strip()
+    if line:
+        yield line

@@ -6,6 +6,45 @@ a row in CLAUDE.md §12 in the same commit.
 
 ---
 
+## P0 — Make the remaining progress bars real
+
+Steps 2 and 4 report honestly now (CLAUDE.md §15 and the four 2026-08-23 rows in
+§12). Three phases still have no number, in order of how long the user spends
+staring at them.
+
+**1. Step 3 — the RealityScan poller.** The route is measured and settled
+(§15.3): `-writeProgress "<rc_output>/progress.txt" 1`, appended to the
+generated `.rscmd` in `build_rscmd`, read by an `asyncio` task started next to
+`spawn()` in `run_rc` and cancelled in the existing `finally` — the file is a
+few tens of KB for a long run, so re-reading it whole each second is cheaper
+than tracking an offset. A missing file must be a no-op, never a step failure.
+Two things the format gives for free: a real ETA (4th column) and a task
+ordinal, one per working verb of the script we generated ourselves, so the
+phases are already identified without parsing anything.
+
+Phase weights go in `defaults.json` under `rc.progress_weights`, seeded from the
+653-image run measured on 2026-08-20 — `align 0.75, export_registration 0.18,
+export_ply 0.02, postprocess 0.05` — and not hardcoded, because a 60-image
+project has a different profile from a 653-image one. **Confirm first** that a
+run with the COLMAP export enabled emits four tasks rather than three: the
+experiment ran `-addFolder`, `-align`, `-exportSparsePointCloud` and got exactly
+one task each, but neither `-exportRegistration` was in it.
+
+**2. `rc_postprocess` reports nothing** while it rewrites a 142 MB ASCII PLY and
+runs the coverage check. Bytes-read over file-size, pure Python, a handful of
+lines.
+
+**3. Curation phase 1 is where the time goes and the bar is flat.**
+`scenes.detect_sequences` takes the `detect_from_video` branch, which hands the
+whole source video to PySceneDetect inside one blocking `run_in_executor`; the
+bar holds at 0.02 and then jumps to 0.25. `SceneManager.detect_scenes` takes a
+per-frame callback, and `progress_cb` already exists in `scenes.py` — it is just
+wired only into the `detect_from_frames` fallback, and `run_analysis` passes it
+nowhere. While there: tick the curation chunks on a timer rather than every 24
+frames, so the cadence does not depend on how expensive a frame happens to be.
+
+---
+
 ## ~~P1 — COLMAP export at the end of step 3~~ — DONE 2026-08-23
 
 **Goal:** step 3 leaves `rc_output/` in the dataset layout LichtFeld Studio reads

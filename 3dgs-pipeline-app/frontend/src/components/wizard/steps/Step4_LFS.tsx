@@ -162,12 +162,17 @@ const Step4_LFS: React.FC = () => {
                 strokeWidth={1.5}
                 name="Loss"
               />
+              {/* PSNR only exists on the `[Evaluation at step N]` lines an
+                  --eval run prints, so it is a handful of points scattered
+                  through a series that otherwise has none — without
+                  connectNulls recharts draws them as invisible isolated dots. */}
               <Line
                 yAxisId="psnr"
                 type="monotone"
                 dataKey="psnr"
                 stroke="#00D4FF"
                 dot={false}
+                connectNulls
                 strokeWidth={1.5}
                 name="PSNR (dB)"
               />
