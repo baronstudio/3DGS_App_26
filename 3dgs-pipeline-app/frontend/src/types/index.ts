@@ -90,9 +90,13 @@ export interface ExportFile {
   size_bytes: number;
 }
 
+/** RealityScan's three alignment values, spelled as its own CLI takes them. */
+export type RCImageOverlap = 'Low' | 'Medium' | 'High';
+
 export interface RCSettingsType {
-  precision: "Preview" | "Normal" | "High";
+  feature_detection_quality: 'Normal' | 'High';
   max_features: number;
+  image_overlap: RCImageOverlap;
   keep_largest: boolean;
   merge_components: boolean;
   rsbox_path?: string;
@@ -185,11 +189,15 @@ export interface ColmapExportDefaults {
 }
 
 export interface RCDefaults {
-  precision: 'Preview' | 'Normal' | 'High';
+  feature_detection_quality: 'Normal' | 'High';
+  /** sfmMaxFeaturesPerMpx — the per-megapixel budget the per-image cap sits on. */
+  max_features_per_mpx: number;
   max_features: number;
+  image_overlap: RCImageOverlap;
   keep_largest: boolean;
   merge_components: boolean;
   normalise_for_lfs: boolean;
+  save_project: boolean;
   colmap: ColmapExportDefaults;
   extra_align_commands: string[];
 }
@@ -358,6 +366,46 @@ export interface AnalysisResponse {
     frame_count: number;
   } | null;
   analysed: boolean;
+}
+
+// -- Input sources (wizard steps 1 and 2) ------------------------------------
+
+/** Raw ffprobe reading of one source file — the shape `core/probe.py` returns. */
+export interface SourceProbe {
+  path: string;
+  container: string | null;
+  codec: string | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  duration_s: number | null;
+  bitrate: number | null;
+  hdr: boolean;
+  pix_fmt: string | null;
+  nb_frames: string | null;
+}
+
+export interface SourceFile {
+  filename: string;
+  kind: 'video' | 'subtitle';
+  size_bytes: number;
+  /** Epoch seconds, as the filesystem reports them. */
+  modified: number;
+  /** Under /static — playable in a <video>, which is what the mini player uses. */
+  url: string;
+  /** Poster frame, or null when ffmpeg could not produce one. */
+  thumb_url: string | null;
+  probe: SourceProbe | null;
+  probe_error: string | null;
+  /** The single video step 2 will extract from (first .mp4, else first .mov). */
+  is_extraction_source: boolean;
+}
+
+export interface SourcesResponse {
+  sources: SourceFile[];
+  extraction_source: string | null;
+  video_count: number;
+  ffmpeg_available: boolean;
 }
 
 // -- 3D viewer (wizard steps 3, 4 and 5) -------------------------------------

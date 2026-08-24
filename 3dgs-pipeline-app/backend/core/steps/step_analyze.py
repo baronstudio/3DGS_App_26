@@ -52,7 +52,15 @@ def resolve_curate_settings(settings: dict) -> tuple[CurateDefaults, str]:
     patch = {k: v for k, v in patch_source.items() if k in base and v is not None}
     resolved = CurateDefaults.model_validate({**base, **patch})
 
-    preset_id = incoming.get("capture_preset") or defaults.extract.capture_preset
+    # The preset lives in the extract block, which now arrives nested — reading
+    # only the top level would silently band every project on the *default*
+    # preset the moment step 2 stopped sending its settings flat.
+    extract_block = incoming.get("extract")
+    preset_id = (
+        (extract_block.get("capture_preset") if isinstance(extract_block, dict) else None)
+        or incoming.get("capture_preset")
+        or defaults.extract.capture_preset
+    )
     preset = PRESETS_BY_ID.get(preset_id)
 
     if resolved.overlap_from_preset and preset is not None:

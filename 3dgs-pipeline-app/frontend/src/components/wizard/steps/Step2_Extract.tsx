@@ -6,13 +6,17 @@ import { usePipeline } from '@/hooks/usePipeline';
 import { useSettings } from '@/hooks/useSettings';
 import { useDefaults } from '@/hooks/useDefaults';
 import { useCuration } from '@/hooks/useCuration';
+import { useSources } from '@/hooks/useSources';
+import { useProjectSettings } from '@/hooks/useProjectSettings';
 import { ProgressBar } from '@/components/panels/ProgressBar';
 import { FrameGallery } from '@/components/panels/FrameGallery';
 import { SharpnessTimeline } from '@/components/panels/SharpnessTimeline';
+import { SourcePanel } from '@/components/panels/SourcePanel';
 import FFmpegSettings from '@/components/settings/FFmpegSettings';
 import CurateSettings from '@/components/settings/CurateSettings';
+import SaveState from '@/components/settings/SaveState';
 import client from '@/api/client';
-import type { CurateDefaults, ExtractDefaults, SelectionSummary } from '@/types';
+import type { CurateDefaults, ExtractDefaults, SelectionSummary, SourceProbe } from '@/types';
 
 /** One stat of the curation summary. */
 const Stat: React.FC<{ label: string; value: string; tone?: string; hint?: string }> = ({
@@ -62,27 +66,33 @@ const Step2_Extract: React.FC = () => {
     frames, summary, analysis, analysed, loading,
     reanalyse, setOverride, refresh, clear, error: curationError,
   } = useCuration(currentProjectId);
+  const {
+    sources, primary: primarySource, ffmpegAvailable,
+    loading: sourcesLoading, error: sourcesError, refresh: refreshSources,
+  } = useSources(currentProjectId);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showCurate, setShowCurate] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Per-project working copies, seeded from the app defaults (CLAUDE.md §4).
-  const [extract, setExtract] = useState<ExtractDefaults | null>(null);
-  const [curate, setCurate] = useState<CurateDefaults | null>(null);
-  const [probe, setProbe] = useState<
-    { fps: number | null; duration_s: number | null; width: number | null; height: number | null } | null
-  >(null);
+  const [probe, setProbe] = useState<SourceProbe | null>(null);
   const [fpsExplanation, setFpsExplanation] = useState<string>('');
+  const [workingFps, setWorkingFps] = useState<number | null>(null);
+
+  // Layer 3 of the settings model (CLAUDE.md §4): the app defaults with this
+  // project's overrides on top, written back on every change so re-opening the
+  // step shows what the user set rather than defaults.json.
+  const {
+    value: extract, setValue: setExtract, flush: flushExtract,
+    saving: savingExtract, savedAt: savedExtractAt, error: extractSaveError,
+  } = useProjectSettings<ExtractDefaults>(currentProjectId, 'extract', defaults?.extract ?? null);
+  const {
+    value: curate, setValue: setCurate, flush: flushCurate,
+    saving: savingCurate, savedAt: savedCurateAt, error: curateSaveError,
+  } = useProjectSettings<CurateDefaults>(currentProjectId, 'curate', defaults?.curate ?? null);
 
   const status = stepStatuses[2];  // step 2 = extract + curate
   const isRunning = status === 'running';
   const isDone = status === 'done';
-
-  // Seed once the defaults arrive; do not clobber edits made since.
-  useEffect(() => {
-    setExtract((cur) => cur ?? defaults?.extract ?? null);
-    setCurate((cur) => cur ?? defaults?.curate ?? null);
-  }, [defaults]);
 
   // The source metadata only exists after a first extraction — absent is fine.
   useEffect(() => {
@@ -93,19 +103,28 @@ const Step2_Extract: React.FC = () => {
       .catch(() => setProbe(null));
   }, [currentProjectId, isDone]);
 
+  // The metadata the policy resolves against. The live probe of the file step 2
+  // is about to open wins over `analysis/probe.json`, which describes the video
+  // of the *last* run — and does not exist at all before the first one, which is
+  // exactly when these settings are being chosen.
+  const sourceProbe = primarySource?.probe ?? probe;
+
   // Resolve the policy against this project's real source when we know it.
   useEffect(() => {
     if (!extract) return;
     const t = setTimeout(() => {
-      previewFps(extract, probe?.fps ?? null, probe?.duration_s ?? null)
-        .then((r) => setFpsExplanation(r.explanation))
-        .catch(() => setFpsExplanation(''));
+      previewFps(extract, sourceProbe?.fps ?? null, sourceProbe?.duration_s ?? null)
+        .then((r) => { setFpsExplanation(r.explanation); setWorkingFps(r.fps); })
+        .catch(() => { setFpsExplanation(''); setWorkingFps(null); });
     }, 250);
     return () => clearTimeout(t);
-  }, [extract, probe, previewFps]);
+  }, [extract, sourceProbe, previewFps]);
 
   /** Everything the backend needs to resolve both phases of step 2. */
-  const jobSettings = () => ({ ...(extract ?? {}), curate: curate ?? {} });
+  const jobSettings = () => ({ extract: extract ?? {}, curate: curate ?? {} });
+
+  /** Land any debounced edit before the run reads the project row. */
+  const saveSettings = () => Promise.all([flushExtract(), flushCurate()]);
 
   const handleExtract = async () => {
     if (!currentProjectId || !extract) return;
@@ -115,7 +134,11 @@ const Step2_Extract: React.FC = () => {
     // new one extracts is showing frames that are already deleted.
     clear();
     try {
+      await saveSettings();
       await startPipeline(currentProjectId, 2, jobSettings());
+      // Cheap (both halves are cached on the file fingerprint) and it re-reads
+      // input/ in case the video was replaced from another screen since mount.
+      refreshSources();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to start extraction');
     }
@@ -124,6 +147,7 @@ const Step2_Extract: React.FC = () => {
   const handleReanalyse = async () => {
     setError(null);
     try {
+      await saveSettings();
       await reanalyse(jobSettings());
     } catch {
       /* surfaced through curationError */
@@ -157,6 +181,18 @@ const Step2_Extract: React.FC = () => {
         Step 2 — Frame Extraction &amp; Curation
       </h2>
 
+      {/* What is in input/, and what step 2 will do with it */}
+      <SourcePanel
+        sources={sources}
+        loading={sourcesLoading}
+        error={sourcesError}
+        ffmpegAvailable={ffmpegAvailable}
+        workingFps={workingFps}
+        maxFrames={extract?.max_frames}
+        scalePercent={extract?.scale_percent}
+        onRefresh={refreshSources}
+      />
+
       {/* Settings summary */}
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3 flex-wrap gap-2">
         <div className="flex gap-4 text-sm text-slate-300 flex-wrap">
@@ -173,7 +209,12 @@ const Step2_Extract: React.FC = () => {
             <span className="text-slate-500 truncate max-w-xs">ffmpeg: {settings.tools.ffmpeg_path}</span>
           )}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
+          <SaveState
+            saving={savingExtract || savingCurate}
+            savedAt={Math.max(savedExtractAt ?? 0, savedCurateAt ?? 0) || null}
+            error={extractSaveError ?? curateSaveError}
+          />
           <Button
             variant="ghost" size="sm"
             onClick={() => { setShowSettings((v) => !v); setShowCurate(false); }}
@@ -204,7 +245,7 @@ const Step2_Extract: React.FC = () => {
             presets={presets}
             onChange={setExtract}
             fpsExplanation={fpsExplanation}
-            sourceSize={probe}
+            sourceSize={sourceProbe}
           />
         </div>
       )}

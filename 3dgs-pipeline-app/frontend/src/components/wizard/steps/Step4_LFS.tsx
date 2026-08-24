@@ -11,28 +11,29 @@ import {
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
+import { useDefaults } from '@/hooks/useDefaults';
+import { useProjectSettings } from '@/hooks/useProjectSettings';
 import { ProgressBar } from '@/components/panels/ProgressBar';
 import SceneViewer from '@/components/viewer/SceneViewer';
 import LFSSettings from '@/components/settings/LFSSettings';
-import type { LFSSettingsType } from '@/types';
-
-const DEFAULT_LFS: LFSSettingsType = {
-  iterations: 30000,
-  strategy: 'default',
-  // 0 = no --max-cap flag, the build's own ceiling (2 M in v0.5.3).
-  max_gaussians: 0,
-  eval: false,
-  save_eval_images: false,
-  background_color: '#000000',
-};
+import SaveState from '@/components/settings/SaveState';
+import type { LFSDefaults } from '@/types';
 
 const Step4_LFS: React.FC = () => {
-  const { currentProjectId, stepStatuses, lfsMetrics, pipelineRunning, setCurrentStep } =
-    usePipelineStore();
+  const { currentProjectId, stepStatuses, lfsMetrics, pipelineRunning, setCurrentStep,
+    clearLfsMetrics } = usePipelineStore();
   const { startPipeline, controlPipeline } = usePipeline();
+  const { defaults } = useDefaults();
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lfsSettings, setLfsSettings] = useState<LFSSettingsType>(DEFAULT_LFS);
+
+  // The panel was seeded from a hardcoded copy of the defaults and thrown away
+  // on unmount. It is now defaults.json under this project's overrides, saved
+  // on every change (CLAUDE.md §4).
+  const {
+    value: lfsSettings, setValue: setLfsSettings, flush: flushLfs,
+    saving, savedAt, error: saveError,
+  } = useProjectSettings<LFSDefaults>(currentProjectId, 'lfs', defaults?.lfs ?? null);
 
   const status = stepStatuses[4];  // step 4 = lfs
   const isRunning = status === 'running';
@@ -42,13 +43,18 @@ const Step4_LFS: React.FC = () => {
   const gaussianCount = lastMetric?.num_gaussians ?? null;
 
   const handleStart = async () => {
-    if (!currentProjectId) return;
+    if (!currentProjectId || !lfsSettings) return;
     setError(null);
+    // The run about to start wipes lfs_output/ (step_lfs resets step 4), so the
+    // curve on screen describes a training that no longer exists on disk. Drop
+    // it on the click rather than letting the new points be appended to it.
+    clearLfsMetrics();
     try {
       // The Advanced panel is the per-project override layer (CLAUDE.md §4);
       // sending {} here made every knob in it decorative.
       const { iterations, strategy, max_gaussians, eval: evalMode,
         save_eval_images, background_color } = lfsSettings;
+      await flushLfs();  // land any debounced edit before the run reads the row
       await startPipeline(currentProjectId, 4, {
         lfs: {
           iterations, strategy, max_gaussians, eval: evalMode,
@@ -79,18 +85,21 @@ const Step4_LFS: React.FC = () => {
 
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3">
         <span className="text-sm text-slate-400">3D Gaussian Splatting training</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setShowSettings((v) => !v)}
-          className="text-slate-400 hover:text-slate-100 gap-1"
-        >
-          <Settings className="w-4 h-4" />
-          Advanced
-        </Button>
+        <div className="flex items-center gap-1">
+          <SaveState saving={saving} savedAt={savedAt} error={saveError} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowSettings((v) => !v)}
+            className="text-slate-400 hover:text-slate-100 gap-1"
+          >
+            <Settings className="w-4 h-4" />
+            Advanced
+          </Button>
+        </div>
       </div>
 
-      {showSettings && (
+      {showSettings && lfsSettings && (
         <div className="rounded-lg bg-slate-800 border border-slate-700 p-4">
           <LFSSettings settings={lfsSettings} onChange={setLfsSettings} />
         </div>
@@ -104,7 +113,7 @@ const Step4_LFS: React.FC = () => {
 
       <Button
         onClick={handleStart}
-        disabled={isRunning || !currentProjectId}
+        disabled={isRunning || !currentProjectId || !lfsSettings}
         className="bg-cyan-600 hover:bg-cyan-500 text-white"
       >
         {isRunning ? 'Training…' : 'Start Training'}

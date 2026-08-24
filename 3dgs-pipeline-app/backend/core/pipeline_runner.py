@@ -11,6 +11,7 @@ Step numbering:
 """
 
 import asyncio
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 from sqlmodel import Session, select
 
 from backend.api.websocket import broadcast
+from backend.core.defaults import deep_merge
 from backend.core.proc import ProcessAborted, kill_project_children
 from backend.core.steps.step_analyze import (
     AnalysisAborted,
@@ -177,6 +179,31 @@ def _get_project(project_id: str) -> Project | None:
         return session.get(Project, project_id)
 
 
+def _stored_settings(project: Project) -> dict:
+    """The project's own settings layer, out of `settings_json`.
+
+    Sectioned exactly as defaults.json — `extract`, `curate`, `rc`, `lfs` —
+    because that is what the resolver of each step already reads.
+    """
+    try:
+        stored = json.loads(project.settings_json or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def _with_project_settings(project: Project, settings: dict) -> dict:
+    """Overlay the request's settings onto the ones stored on the project.
+
+    A run started from a wizard step sends the panel it has on screen, which is
+    the same thing — but a run started with `{}` (steps 5 and 6, or a call from
+    anywhere but that step's own panel) would otherwise silently drop the whole
+    per-project layer back onto the app defaults, which is precisely what
+    CLAUDE.md §4's precedence forbids.
+    """
+    return deep_merge(_stored_settings(project), settings or {})
+
+
 def _update_project(project_id: str, **kwargs) -> None:
     with Session(engine) as session:
         project = session.get(Project, project_id)
@@ -271,6 +298,9 @@ async def run_pipeline(
         return
 
     project_path = PROJECTS_DIR / project.slug
+    # Per-project > defaults > code fallback (CLAUDE.md §4). The request wins
+    # over the stored layer, never replaces it.
+    settings = _with_project_settings(project, settings)
 
     # ── Debug: log invocation context ────────────────────────────────────────
     existing_statuses = project.get_step_status()
@@ -448,6 +478,7 @@ async def run_analysis_only(project_id: str, settings: dict = {}) -> None:
         return
 
     project_path = PROJECTS_DIR / project.slug
+    settings = _with_project_settings(project, settings)
     step_status = project.get_step_status()
 
     _abort_flags[project_id] = False

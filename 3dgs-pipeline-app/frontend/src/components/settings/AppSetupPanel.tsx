@@ -552,23 +552,57 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
 
             {draft && section === 'rc' && (
               <div className="divide-y divide-slate-800">
-                <Row label="Alignment precision">
+                <SubHeading
+                  title="Alignment settings"
+                  note="These four go into the script as -set key=value lines, under RealityScan's own key names, and they are what the alignment actually runs with. They are application settings on the RS side, not project ones: the CLI has no per-project scope for them, so a run also leaves them in the Alignment Settings panel of the RS GUI."
+                />
+                <Row
+                  label="Feature detection quality"
+                  hint="sfmFeatureDetectionQuality. High detects more features and aligns more precisely, for more time and RAM. RealityScan 2.2 has these two values only."
+                >
                   <Choice
-                    value={draft.rc.precision}
-                    onChange={(v) => patch('rc', 'precision', v)}
+                    value={draft.rc.feature_detection_quality}
+                    onChange={(v) => patch('rc', 'feature_detection_quality', v)}
                     options={[
-                      { value: 'Preview', label: 'Preview' },
                       { value: 'Normal', label: 'Normal' },
                       { value: 'High', label: 'High' },
                     ]}
                   />
                 </Row>
-                <Row label="Max features per image">
+                <Row
+                  label="Max features per mpx"
+                  hint="sfmMaxFeaturesPerMpx — the detector's budget per megapixel, which is what really caps a 4K frame; the per-image number below is the ceiling on top of it. RealityScan's own default is 10 000; 30 000 is what this workstation has been aligning with. More features is slower and tends to give fewer components."
+                >
+                  <NumField
+                    value={draft.rc.max_features_per_mpx}
+                    step={5000}
+                    min={1000}
+                    onChange={(v) => patch('rc', 'max_features_per_mpx', v)}
+                  />
+                </Row>
+                <Row
+                  label="Max features per image"
+                  hint="sfmMaxFeaturesPerImage. RealityScan's own default is 40 000."
+                >
                   <NumField
                     value={draft.rc.max_features}
                     step={5000}
                     min={1000}
                     onChange={(v) => patch('rc', 'max_features', v)}
+                  />
+                </Row>
+                <Row
+                  label="Image overlap"
+                  hint="sfmImagesOverlap — how much of the object neighbouring frames share. Low below 20 %, High above 60 %. Raise it when curation found several sequences: across a cut, frame k and k+1 are unrelated, so the sequential preselection cannot bridge them (§7.1)."
+                >
+                  <Choice
+                    value={draft.rc.image_overlap}
+                    onChange={(v) => patch('rc', 'image_overlap', v)}
+                    options={[
+                      { value: 'Low', label: 'Low' },
+                      { value: 'Medium', label: 'Medium' },
+                      { value: 'High', label: 'High' },
+                    ]}
                   />
                 </Row>
                 <Row label="Keep largest component only">
@@ -593,6 +627,15 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   <Switch
                     checked={draft.rc.normalise_for_lfs}
                     onCheckedChange={(v) => patch('rc', 'normalise_for_lfs', v)}
+                  />
+                </Row>
+                <Row
+                  label="Save the RealityScan project"
+                  hint="Adds -save rc_output/<project>.rsproj to the script. RealityScan aligns in memory and drops the project on -quit, so without it there is nothing to reopen — inspecting the alignment, placing control points on a split or re-exporting would all mean aligning again. A re-alignment replaces it, like everything else in rc_output/."
+                >
+                  <Switch
+                    checked={draft.rc.save_project}
+                    onCheckedChange={(v) => patch('rc', 'save_project', v)}
                   />
                 </Row>
 

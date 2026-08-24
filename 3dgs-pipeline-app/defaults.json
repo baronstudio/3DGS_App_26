@@ -23,11 +23,14 @@
         "overlap_band_max_pct": 12.0
     },
     "rc": {
-        "precision": "Normal",
+        "feature_detection_quality": "High",
+        "max_features_per_mpx": 30000,
         "max_features": 60000,
+        "image_overlap": "Medium",
         "keep_largest": true,
         "merge_components": false,
         "normalise_for_lfs": true,
+        "save_project": true,
         "colmap": {
             "enabled": true,
             "directory_structure": "standard",

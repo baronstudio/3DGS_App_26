@@ -119,13 +119,16 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
     ├── report/                 # report.json + report.md
     ├── rc_output/              # transforms.json, pointcloud.ply,
     │   │                      #   align.rscmd + alignment_check.json (§7.1)
+    │   │                      #   + rc_progress.txt, RS's own bar (§15.3)
     │   └── <slug>_COLMAP/      # the COLMAP dataset step 4 trains on (§7.2):
     │                          #   images/ + sparse/0/. Its own folder because
     │                          #   the NeRF export writes the same basenames.
     ├── lfs_output/
     ├── export/
     └── preview/                # ⚙ generated: browser-sized copies for the 3D
-                               #   viewer (§7.3). Cache, safe to delete.
+        └── sources/           #   viewer (§7.3), plus the poster frame and the
+                               #   cached ffprobe of each input video (§6.5).
+                               #   Cache, safe to delete.
 ```
 
 **Why per-frame data is JSON and not SQL:** a single project produces thousands of
@@ -211,6 +214,28 @@ to change one number is unacceptable.
 > size.~~ **Deleted 2026-08-20** when `curate/sharpness.py` landed. `/api/files/{id}/frames`
 > now reads the verdicts from `analysis/selection.json` and reports `verdict: null`
 > before the first analysis, rather than guessing.
+
+### 6.5 The input sources panel
+
+Step 2 says what it is about to read before it reads it. `/api/files/{id}/sources`
+lists every file in `input/` with its ffprobe reading and a poster frame, and
+badges the one video the extraction will actually consume — `find_extraction_source`
+in `core/sources.py`, which `step_extract` calls too, so the badge cannot drift
+from the file FFmpeg opens. Clicking a poster opens a mini player streaming the
+file from `/static` (Starlette answers range requests, so seeking works without
+copying anything anywhere).
+
+It is not the same question as `/probe`, which reads `analysis/probe.json` — the
+source of the *last* run, absent until there has been one. The fps policy (§6.2)
+and the downscale (§6.1) are chosen against the cadence and the resolution of the
+file about to be read, and until this panel neither was on the screen where the
+choice is made. Step 2 now resolves its fps preview against the live probe and
+falls back to `probe.json`, and states the estimate that follows from it: how
+many frames this source, at this policy, will hand to curation.
+
+Both the probe and the poster are cached under `preview/sources/`, named with the
+same mtime+size fingerprint as the 3D previews (§12, 2026-08-22), so a re-uploaded
+video gets a new name rather than a rename onto a file the browser is reading.
 
 ### 6.4 Step 2 UI
 
@@ -387,7 +412,8 @@ GET    /api/defaults/presets           capture presets
 GET    /api/version/                  app name, version (commit date) and commit id
 GET    /api/files/{project}/frames     frame list + curation verdicts
 GET    /api/files/{project}/analysis   scores.json + selection.json + overrides
-GET    /api/files/{project}/probe      ffprobe metadata of the source video
+GET    /api/files/{project}/sources    input/ listing: probe + poster frame per video
+GET    /api/files/{project}/probe      ffprobe metadata of the *last extracted* source
 GET    /api/files/{project}/alignment  RS coverage report (alignment_check.json)
 GET    /api/files/{project}/preview    3D preview state (?source=rc|lfs|export&max_count=)
 POST   /api/files/{project}/preview    build that preview — returns at once, poll the GET
@@ -500,7 +526,14 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-23 | **The CR-split line reader is shared, and FFmpeg reports through `-progress`.** `_iter_output` was written for LichtFeld Studio's training bar (2026-08-20) and the same defect was sitting in step 2 and step 3 untouched: `readline()` splits on LF, and FFmpeg redraws `frame= … time=` with a bare CR on a line that never terminates, so the regex fired once, at exit. Three occurrences is where it becomes `proc.iter_lines()`. Step 2's numerator was broken independently — `progress = frame_count / max_frames if max_frames > 0 else None`, and `max_frames` is the optional cap, normally 0, so the value was `None` and the message was typed `log`. It now asks FFmpeg directly: `-progress pipe:1 -nostats` writes newline-delimited `key=value` blocks to stdout twice a second, and `out_time_us` divides into the `duration_s` that `probe.json` has held all along. `max_frames` stays as a second denominator when it is set, whichever is further along, because a 200-frame cap on a ten-minute source would otherwise crawl to 3 % and stop. Capped at 0.99 while running: the store reads 1.0 as "the step is done", and it is not until the frames are counted. Measured end to end on an 88 s 4K source — 0.002 to 0.990, smooth, over 372 s. |
 | 2026-08-23 | **A message's type no longer decides whether its progress is used — and step 4's bar was never parsed to begin with.** `websocket.py` picks `msg_type` by priority and tests `data` before `progress`, so every LichtFeld Studio line, which carries both, went out as `metric`; the store's `metric` case only appended to `lfsMetrics`. The store now reads `progress` above the `switch`, for every type — the priority is right about what a message *is* and has no business deciding which of its fields may be read. That alone would still have moved nothing: measured against a real v0.5.3 headless run, the bar reads `Training […] 66% [00m:01s<00m:00s] 100/300 \| Loss: 0.1391 \| Splats: 281029`, and the iteration regex was anchored with `$` to a line that ends with the splat count, the fallback `iter n/N` form is not printed by this build, and the gaussian count is written `Splats:`, which nothing looked for. The bar's own percentage is not the training's — it read 33 / 66 / 100 % at "Initializing" / 100 / 200 — so the `N/M` pair is the only honest number on the line, mapped onto 5–95 % because a run loads its dataset for 10 s before iteration 1 and writes a checkpoint after the last. Its ETA is derived from that same broken percentage (`00m:00s` remaining at 100/300) and is **not** forwarded; the bar estimates its own. The metric gate is relaxed to match: PSNR exists only on the `[Evaluation at step N]` line an `--eval` run prints, so demanding iteration + loss + psnr + gaussians together meant no point ever qualified and the chart was empty for every run. Fields nobody reported stay `undefined` rather than being carried forward — recharts draws no line for a series that is never present, which is the truth about a run with no evaluation. |
 | 2026-08-23 | **RealityScan reports through `-writeProgress <file> 1`; the log tail and `-printProgress` are both dead ends (§15.3).** `RealityScan.exe` is a GUI-subsystem binary, so the `readline()` loop in `run_rc` blocks until it exits and step 3 has never emitted anything but the final `1.0`. Measured on a real 110-image alignment: `-writeProgress "<file>" 1` writes live, about a line a second, across every task — while the same verb with the documented-looking `1000` created the file and wrote **0 bytes**, which is what made the feature look absent (the delta is in seconds, so 1000 means "never"). `-printProgress` does reach an anonymous pipe despite the missing console, but the CRT full-buffers it into 4 KB flushes and a whole alignment emits ~3 KB — one late update. And `%TEMP%\RealityScan.log` is frozen at the same byte count for the entire reconstruction, so tailing it would have covered every phase except the one that takes 1065 s. The format is `%d %.2f %.2lf %.2lf #%s` — task id, fraction, elapsed, **estimated remaining**, `started`/`progress`/`completed` — with one task per working verb of the `.rscmd`, in order, which is what `rc.progress_weights` will scale. The poller is not written yet; this row records the route so the measurement is not made twice. |
+| 2026-08-24 | **Step 2 shows its input, and one function decides which video that is (§6.5).** The step chose the fps policy, the JPEG quality and the downscale for a video it never named: the settings summary listed the ffmpeg path and nothing about the file it would be pointed at, and `/probe` — the only source metadata on screen — reads `analysis/probe.json`, which describes the *previous* run and does not exist before the first one, i.e. it is empty exactly when these settings are being chosen. `/api/files/{id}/sources` probes what is on disk now, one entry per file in `input/`, each with a poster frame FFmpeg pulls a tenth of the way in (not frame 0 — that is the operator still reaching for the camera, or a fade-in), and the panel turns a click on the poster into a mini player over the step. The extraction source is *badged*, not restated: `run_extract` took `list(glob("*.mp4")) + list(glob("*.mov"))` and its `[0]`, and a UI repeating that rule is a second rule waiting to disagree with it — both sides now call `sources.find_extraction_source`, which is also what lets the panel warn that a second video in `input/` is never read. Probe and poster are cached under `preview/sources/` on the mtime+size fingerprint (2026-08-22), so the panel costs a directory listing after the first call, and a reset from step 3 on costs one ffmpeg call per video to rebuild. The player streams from `/static` rather than from a copy — Starlette answers range requests — and handles the decode failure explicitly, because the DJI rushes this app is built around are HEVC 10-bit and a browser that cannot decode one otherwise shows a black rectangle with no explanation. |
 | 2026-08-23 | **A running step that says nothing for ten seconds gets stripes, not a number.** `ProgressBar` held whatever percentage arrived last, so the phases with no channel at all — PySceneDetect decoding the source video, RealityScan reconstructing, `rc_postprocess` rewriting 142 MB of ASCII PLY — were indistinguishable from a hung app, and its ETA was silent there too (samples are cleared below 5 %, which is exactly where those phases sit). After 10 s without a progress message a running step switches to indeterminate stripes and an elapsed count, keeping the last percentage beside them when there was one: "31 %, and nothing since" is more use than either a frozen bar or no number. The component's own step-name map was also missing `curate`, so step 2's second bar knew no status and never turned green. |
+| 2026-08-24 | **A re-training is a reset of step 4** — the last of the four steps that wrote over its own previous run. LichtFeld Studio names its output after the iteration it stopped at (`splat_9000.ply`, `checkpoints/`, `metrics.csv`, `pointcloud.spz`) and writes into `lfs_output/` without clearing it, so a shorter second run left the previous splat beside the new one — and `run_lfs` returns `sorted(*.ply)[-1]`, which is not the file this run produced: after 9 000 iterations a 4 000-iteration re-run still reported `splat_9000.ply`, step 5 exported it, and the viewer showed it. `run_lfs` now calls `reset_steps(project_path, [4])` after the exe is located and before training, exactly as `run_rc` resets step 3 (2026-08-23) and `run_extract` step 2 (2026-08-22) — same function, same placement, same reason. It takes `preview/` with it (§14.1: the cache goes with any step from 3 on), so the viewer cannot show the previous training's splat over an empty directory. Each step clears **its own** folder only: resetting the later steps too is the reset menu's job, and a re-alignment that silently deleted a two-hour training would be a worse surprise than a stale one. |
+| 2026-08-24 | **A re-export is a reset of step 5, and the four resets all run after their preconditions.** With step 4 clearing `lfs_output/`, `export/` was the last place a stale splat could survive a re-run: `run_export` copies every `*.ply`/`*.splat` under its own name, so a training that stopped at another iteration landed *beside* the previous one — `coutryside_001/export/` was holding a `splat_9000.ply` whose source no longer existed. It clears `export/` after the scan of `lfs_output/`, so an empty training does not cost the export already on disk. That takes step 6's `scene.blend` and `README_SPLATFORGE.txt` with it, which is what §14.1 already means by resetting 5: the two steps share the directory, and a Blender scene pointing at a splat that is gone is not worth keeping — the step says so in the log. The same audit moved step 2's reset, which sat *above* `resolve_ffmpeg_path`: that function raises when nothing is configured and there is no ffmpeg on PATH, so a bad tool path deleted the frames it was then unable to re-extract, exactly what its own comment claimed it avoided. The rule across all four: **locate the tool and the input first, delete second.** |
+| 2026-08-24 | **Layer 3 of the settings model existed on paper only: the wizard panels now write to `Project.settings_json` on every change.** §4 has said since the merge that a project stores what the user changed for *that* project, and nothing ever wrote it — every row in `pipeline.db` held `{}`. The three Advanced panels seeded a `useState` from `defaults.json` (step 4 from a hardcoded copy of it, which had already drifted: `iterations` 30 000 against the file's own value) and threw it away on unmount, so a threshold tuned in step 2 was gone the moment the user looked at step 3, and the settings a project trained with were unreadable afterwards — they only ever existed in the `/pipeline/start` body. `useProjectSettings(projectId, section, defaults[section])` replaces the three copies: it reads the project's overrides, shows the defaults under them, and PATCHes back a **diff** — `deepDiff`, so a project stores only the keys it really overrides and changing a default keeps propagating, which sending the whole panel would have ended. There is no Save button because a panel that must be saved is a panel that gets lost; the 300 ms debounce that coalesces a slider drag is flushed on unmount, on a project switch (the patch is tagged with the id it was typed against) and on `beforeunload` through a `keepalive` fetch, and a failed PATCH puts its patch back rather than dropping it. On the backend `run_pipeline` and `run_analysis_only` overlay the stored layer *under* the request's, so a step started with `{}` — 5, 6, or any caller that is not that step's own panel — no longer silently falls back to the app defaults. Step 2's block travels nested under `extract` like `rc` and `lfs` rather than flat at the top level, which cost two lookups: `resolve_extract_settings` accepts both shapes, and `resolve_curate_settings` reads the capture preset from the nested block first — left alone it would have banded every project on the *default* preset the day step 2 stopped sending flat. |
+| 2026-08-24 | **The alignment is saved as a `.rsproj`, before the exports.** RealityScan runs the whole `.rscmd` on an in-memory project and drops it on `-quit`, so an alignment that took an hour left nothing to reopen: re-inspecting it, placing control points on a split (§7.1 — GUI only) or re-exporting all meant aligning again. `build_rscmd` adds `-save "<rc_output>/<slug>.rsproj"` under `rc.save_project` (on by default, a switch in the setup panel's RealityScan section). It sits **after** `-align`/`-selectMaximalComponent` and **before** the two exports, because RS aborts the script on a verb it does not know — which is exactly what `-mergeComponents` is switchable for — and the alignment must survive an export that never runs. The file lives in `rc_output/`, so a re-alignment resets it with the rest of step 3 (2026-08-23). |
+| 2026-08-24 | **The alignment settings are sent with `-set`, and until now none of them were.** `build_rscmd` wrote `-addFolder`, `-align`, the exports and nothing else, so `precision` and `max_features` — a radio and a slider present in *both* settings panels since the merge — reached RealityScan through no channel at all: every alignment ran on whatever the RS GUI had last been left on, and the two controls were decoration. RS's CLI takes application settings as `-set "key=value"`, and the keys are enumerated in the installed help (`Help/en-US/tutorials/setkeyvaluetable.htm`, "Alignment Settings") rather than guessed: `sfmFeatureDetectionQuality`, `sfmMaxFeaturesPerMpx`, `sfmMaxFeaturesPerImage`, `sfmImagesOverlap`. The four are emitted at the top of the `.rscmd`, before `-addFolder`, so `rc.extra_align_commands` can still override any of them. Three consequences. **Feature detection quality has two values in RS 2.2, not three** — `Normal` and `High`; the `Preview` the radio offered exists nowhere in RS, so `precision` becomes `feature_detection_quality` and an old project row carrying the dead key is dropped by `resolve_rc_settings` like any other unknown field. **Per-mpx is the cap that bites on a 4K frame**, the per-image number being a ceiling on top of it, which is why the panel that only exposed the second one could not explain a feature count; its app default is 30 000, this workstation's tuned GUI value, because sending RS's own 10 000 the day the key started being sent would have quietly detected a third of the features on every project. **And they are *application* settings, not project ones**: the CLI has no per-project scope for them, so a run leaves its values in the RS GUI's Alignment Settings panel — the app owns them now, which the setup panel says in as many words. Image overlap is exposed in both layers (§7.1 makes it the first thing to raise on a split), the per-mpx budget in the global one. |
+| 2026-08-24 | **Step 3 has a progress bar, fed by `-writeProgress` and weighted by the script it just wrote.** The route was decided on 2026-08-23 and the poller left unwritten; writing it turned up two errors in the note that recorded it. **The task ids are stable and the ordinals are not** — four separate processes emitted the same ids (`65536` addFolder, `65537` align, `20576` exportRegistration, `20585` exportSparsePointCloud), while `-align` moved from task 2 of 3 to task 5 of 9 once the `-set` block and the `-save` were added; three of the "tasks" being counted were RS booting (`41061`, `41063`, `41064`, present when `-quit` is the whole script), and `-set` emits none. So `rc_progress.py` plans from the `.rscmd` `build_rscmd` generated and lets each id claim the next plan entry **of its own kind**, which keeps the bar honest when RS skips a verb without failing the script — the `err:5617` COLMAP export (2026-08-23) did exactly that. And the trailing `1` is a **heartbeat period, not a write interval**: the verb writes every change with no argument at all, and the `#timeout` lines it adds are what distinguishes a plateau from a hang, which the alignment needs — it sat at `0.55` for 20 s and `0.85` for 5 s of a 90 s run. The weights stay in `rc_progress.py` rather than becoming the `rc.progress_weights` the earlier note imagined: they measure the tool, like the 5–95 % mapping of the LFS bar, and nobody wants a slider for them. **`getStatus` was checked and rejected as the channel**: `-setInstanceName` + `RealityScan.exe -getStatus <name>` does answer, in 170–470 ms, without disturbing the run, and returns the same task, fraction and clocks the file already holds — but only for the task now running, so it can count nothing, and it costs a whole `RealityScan.exe` per poll. What it does prove is that the delegate family works headless, which makes `pauseInstance`/`unpauseInstance`/`abortInstance` real and §12's "no tool here has a pause verb" (2026-08-20) false for RealityScan. Not revived: that is a feature. |
 
 Any new structural decision → add a row here in the same commit.
 
@@ -587,7 +620,7 @@ and a phase with no channel says so instead of sitting on a number.
 |---|---|---|
 | 2 extract | FFmpeg `-progress pipe:1 -nostats` — `key=value` blocks on stdout, ~2/s | `out_time_us` against `probe.json`'s `duration_s`; `max_frames` too when capped, whichever is further along |
 | 2 curate | `step_analyze._chunked`, every 24 frames | frame count — but flat through phase 1, see §15.4 |
-| 3 RS | RealityScan `-writeProgress <file> 1` (§15.3) — **route decided, poller not written yet** | per-task fraction, one task per working `.rscmd` verb |
+| 3 RS | RealityScan `-writeProgress <file> 1`, tailed from `rc_output/rc_progress.txt` (§15.3) | the running task's fraction against the weighted plan of the `.rscmd` this run generated (`rc_progress.py`) |
 | 4 LFS | the `Training […]` bar, redrawn with a bare CR | the `N/M` pair after the clock, mapped onto 5–95 % |
 
 ### 15.1 Three tools, one bug: the carriage return
@@ -630,10 +663,68 @@ s**, and `started` / `progress` / `completed`:
 65537 1.00 26.14 0.00  #completed
 ```
 
-RS emits **one task per working verb** of the generated `.rscmd`, in order —
-`-addFolder`, `-align`, `-exportSparsePointCloud` gave exactly three — which is
-what the phase weights of `rc.progress_weights` will be applied to. The task ids
-are not a stable map (65536, 65537, then 20585): the *ordinal* is.
+RS emits **one task per working verb** of the generated `.rscmd` — plus three
+that are not verbs at all: `41061`, `41063`, `41064` are RS booting, and they
+are present in a run whose entire script is `-quit`. `-set` emits nothing.
+Measured on `fauteuil3d_test`, 251 frames, 106 s end to end:
+
+| Task id | Verb | This run |
+|---|---|---|
+| `41061`, `41063`, `41064` | RS startup — not a phase | 0.00 s ×3 |
+| — | `-set` | no task at all |
+| `65536` (0x10000) | `-addFolder` | 0.19 s |
+| `65537` (0x10001) | `-align` | **89.95 s** |
+| `20533`, `20534` | `-selectMaximalComponent`, `-save` (not separable) | 0.10 / 0.59 s |
+| `20576` (0x5060) | `-exportRegistration` — it undistorts and rewrites every image | 9.79 s |
+| `20585` (0x5069) | `-exportSparsePointCloud` | 0.37 s |
+
+**The id is the stable key and the ordinal is not** — the reverse of what this
+section said until 2026-08-24. The ids repeated byte for byte across four
+separate processes, `20585` matching the 110-image measurement above; the
+ordinals moved, `-align` being task 2 of 3 there and task 5 of 9 here, because
+the `-set` block and the `-save` landed in between and because the three startup
+tasks were being counted as verbs. So `rc_progress.py` builds the expected list
+from the script `build_rscmd` has just written and lets each incoming id claim
+the next entry **of its own kind**. That resync is not decoration: a verb RS
+refuses is skipped *without failing the script* — the `err:5617` COLMAP export
+of §12 (2026-08-23) was exactly that — and a bar keyed on the ordinal alone
+would then credit the alignment's weight to the wrong phase for the rest of the
+run.
+
+The weights live in `rc_progress.py`, not in `defaults.json` as an earlier
+version of this section assumed: they are a measurement of the tool, like the
+5–95 % mapping of the LichtFeld bar, and there is no reading of the app in which
+the user wants a slider for them. They are relative and renormalised over
+whatever verbs the script actually contains, so the second `-exportRegistration`
+of a COLMAP run is weighted without a second table.
+
+The second argument is a **heartbeat period, not a write interval**:
+`-writeProgress <file>` with no argument at all still wrote all 104 lines of an
+`-addFolder` run. `1` adds `#timeout` lines that repeat the last value when
+nothing has changed, which is what lets the bar tell a plateau from a hang — the
+alignment sat at `0.85` for 5 s and at `0.55` for 20 s. Why `1000` produced an
+empty file is therefore *not* "the delta is 1000 seconds"; it is unexplained and
+no longer worth explaining.
+
+**`getStatus` is the same data, pulled, and it cannot build this bar.** The
+delegate family (§8 of RS's help) reaches a running instance named with
+`-setInstanceName`: `RealityScan.exe -getStatus RSPROBE` answers on its own
+stdout, 170–470 ms per call, without disturbing the alignment —
+
+```
+[t+89.3 s] id:0x10001 progress:85.2% runtime:86.47sec endEstimation:15.46sec rev:1 lastError:0
+[t+106  s] error: cannot find a running RealityScan instance      (exit 5)
+```
+
+— which is the same task, the same fraction and the same clocks the file was
+carrying at that instant (`65537 0.85 87.49 15.66 #timeout`). It reports the
+*current* task only, so it cannot count what completed, which is precisely what
+an overall bar needs; and it costs a whole `RealityScan.exe` per poll. It is
+worth keeping in mind for two things the file cannot do: `lastError:`, and a
+liveness answer. **And it makes `pauseInstance` / `unpauseInstance` /
+`abortInstance` real** — so §12's "none of FFmpeg, RealityScan or LichtFeld
+Studio has a pause verb anyway" (2026-08-20) is false for RealityScan. Reviving
+Pause for step 3 alone is a feature, not a wiring fix, and it is not done.
 
 ### 15.4 Where the bars are still flat
 

@@ -5,17 +5,12 @@ import client from '@/api/client';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
 import { useDefaults } from '@/hooks/useDefaults';
+import { useProjectSettings } from '@/hooks/useProjectSettings';
 import { ProgressBar } from '@/components/panels/ProgressBar';
 import SceneViewer from '@/components/viewer/SceneViewer';
 import RCSettings from '@/components/settings/RCSettings';
-import type { AlignmentReport, RCSettingsType } from '@/types';
-
-const DEFAULT_RC: RCSettingsType = {
-  precision: 'Normal',
-  max_features: 60000,
-  keep_largest: true,
-  merge_components: true,
-};
+import SaveState from '@/components/settings/SaveState';
+import type { AlignmentReport, RCDefaults, RCSettingsType } from '@/types';
 
 /** Cameras / points from the RC log. */
 function parseRCStats(logs: { message: string; level: string }[]): { cameras: number | null; points: number | null } {
@@ -43,8 +38,15 @@ const Step3_RC: React.FC = () => {
   const { defaults } = useDefaults();
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rcSettings, setRcSettings] = useState<RCSettingsType>(DEFAULT_RC);
   const [alignment, setAlignment] = useState<AlignmentReport | null>(null);
+
+  // defaults.json under this project's overrides, saved on every change
+  // (CLAUDE.md §4). `rc` is deep: `colmap` and its `undistort` block are edited
+  // from the setup panel and must survive a change made here.
+  const {
+    value: rcSettings, setValue: setRcSettings, flush: flushRc,
+    saving, savedAt, error: saveError,
+  } = useProjectSettings<RCDefaults>(currentProjectId, 'rc', defaults?.rc ?? null);
 
   const status = stepStatuses[3];  // step 3 = rc
   const isRunning = status === 'running';
@@ -52,13 +54,6 @@ const Step3_RC: React.FC = () => {
 
   const rcLogs = logs.filter((l) => l.step === 'rc');
   const { cameras, points } = parseRCStats(rcLogs);
-
-  // Hydrate the panel from defaults.json — the hardcoded DEFAULT_RC is only the
-  // pre-fetch placeholder. Precedence stays defaults < per-project (CLAUDE.md §4).
-  useEffect(() => {
-    if (!defaults?.rc) return;
-    setRcSettings((prev) => ({ ...prev, ...defaults.rc }));
-  }, [defaults]);
 
   const fetchAlignment = useCallback(async () => {
     if (!currentProjectId) return;
@@ -79,10 +74,11 @@ const Step3_RC: React.FC = () => {
   }, [fetchAlignment, isRunning, isDone]);
 
   const handleRun = async () => {
-    if (!currentProjectId) return;
+    if (!currentProjectId || !rcSettings) return;
     setError(null);
     setAlignment(null);
     try {
+      await flushRc();  // land any debounced edit before the run reads the row
       await startPipeline(currentProjectId, 3, { rc: rcSettings });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to start RS alignment';
@@ -99,20 +95,28 @@ const Step3_RC: React.FC = () => {
 
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3">
         <span className="text-sm text-slate-400">RealityScan alignment &amp; sparse reconstruction</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setShowSettings((v) => !v)}
-          className="text-slate-400 hover:text-slate-100 gap-1"
-        >
-          <Settings className="w-4 h-4" />
-          Advanced
-        </Button>
+        <div className="flex items-center gap-1">
+          <SaveState saving={saving} savedAt={savedAt} error={saveError} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowSettings((v) => !v)}
+            className="text-slate-400 hover:text-slate-100 gap-1"
+          >
+            <Settings className="w-4 h-4" />
+            Advanced
+          </Button>
+        </div>
       </div>
 
-      {showSettings && (
+      {showSettings && rcSettings && (
         <div className="rounded-lg bg-slate-800 border border-slate-700 p-4">
-          <RCSettings settings={rcSettings} onChange={setRcSettings} />
+          {/* The panel edits a subset of RCDefaults; spread it back over the
+              whole block so `colmap` and `normalise_for_lfs` are not dropped. */}
+          <RCSettings
+            settings={rcSettings}
+            onChange={(s: RCSettingsType) => setRcSettings({ ...rcSettings, ...s })}
+          />
         </div>
       )}
 
@@ -124,7 +128,7 @@ const Step3_RC: React.FC = () => {
 
       <Button
         onClick={handleRun}
-        disabled={isRunning || !currentProjectId}
+        disabled={isRunning || !currentProjectId || !rcSettings}
         className="bg-cyan-600 hover:bg-cyan-500 text-white"
       >
         {isRunning ? 'Aligning…' : 'Run Alignment'}

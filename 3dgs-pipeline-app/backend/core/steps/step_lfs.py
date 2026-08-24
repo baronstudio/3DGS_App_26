@@ -4,6 +4,7 @@ from pathlib import Path
 
 from backend.core.config import app_config
 from backend.core.defaults import LFSDefaults, load_defaults
+from backend.core.project_ops import reset_steps
 from backend.core.proc import (
     ProcessAborted,
     iter_lines,
@@ -123,6 +124,23 @@ async def run_lfs(project_path: Path, broadcast_fn, settings: dict) -> dict:
             f"LichtFeld-Studio executable not found at: {lfs_exe}\n"
             "Build LichtFeld Studio from source (C++23 + CUDA 12.8 required),\n"
             "then set lfs_exe_path in Settings."
+        )
+
+    # A re-training is a reset of step 4, exactly as a re-alignment is a reset
+    # of step 3 (step_rc) and a re-extraction one of step 2 (step_extract).
+    # LichtFeld Studio names its output after the iteration it stopped at -
+    # `splat_9000.ply`, `checkpoints/`, `metrics.csv` - and writes into the
+    # directory without clearing it, so a shorter second run leaves the previous
+    # splat sitting beside the new one. `splats[-1]` below then reports whichever
+    # name sorts last, not the one this run produced: after 9 000 iterations,
+    # a 4 000-iteration re-run still returns `splat_9000.ply`, and step 5 exports
+    # it. Done after the exe is located, so a misconfigured path does not cost
+    # the training already on disk.
+    removed = reset_steps(project_path, [4])
+    if removed:
+        await broadcast_fn(
+            "lfs", "INFO",
+            f"[LFS] Cleared the previous training ({', '.join(removed)}).",
         )
 
     lfs_output = project_path / "lfs_output"

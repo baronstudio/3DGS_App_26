@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 
@@ -5,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from backend.core import cameras, preview
+from backend.core import cameras, preview, sources
+from backend.core.config import app_config
 from backend.core.steps.step_analyze import read_json
 from backend.db.database import get_session
 from backend.models.project import Project
@@ -34,6 +36,35 @@ async def read_probe(project_id: str, session: Session = Depends(get_session)):
     slug = get_slug_from_id(project_id, session)
     probe = read_json(PROJECTS_DIR / slug / "analysis" / "probe.json")
     return {"probe": probe}
+
+
+@router.get("/{project_id}/sources")
+async def read_sources(
+    project_id: str,
+    thumbnails: bool = True,
+    session: Session = Depends(get_session),
+):
+    """What `input/` holds: every source file, probed, with a poster frame.
+
+    Distinct from `/probe`, which reads `analysis/probe.json` — the source of
+    the *last* extraction, and absent until there has been one. This one probes
+    what is on disk now, which is what step 2 is about to read, and says which
+    of several videos that is.
+
+    ffprobe and the thumbnail are subprocesses, so the work goes to a worker
+    thread; both results are cached on the file's fingerprint, and a second call
+    costs a directory listing.
+    """
+    slug = get_slug_from_id(project_id, session)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        sources.list_sources,
+        PROJECTS_DIR / slug,
+        slug,
+        app_config.tools.ffmpeg_path,
+        thumbnails,
+    )
 
 
 @router.get("/{project_id}/analysis")

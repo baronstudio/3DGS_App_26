@@ -211,8 +211,30 @@ class ColmapExportDefaults(BaseModel):
 
 
 class RCDefaults(BaseModel):
-    precision: Literal["Preview", "Normal", "High"] = "Normal"
+    # -- Alignment settings ---------------------------------------------------
+    # Sent to RealityScan as `-set "<key>=<value>"` at the top of the .rscmd.
+    # The keys are RS's own, from its help (Help/en-US/tutorials/
+    # setkeyvaluetable.htm, "Alignment Settings"), and they are *application*
+    # settings: what a run sends is also what the RS GUI shows afterwards.
+    #
+    # `sfmFeatureDetectionQuality`. Two values in RS 2.2, Normal and High -
+    # there is no "Preview" quality, whatever the old `precision` field said.
+    feature_detection_quality: Literal["Normal", "High"] = "High"
+    # `sfmMaxFeaturesPerMpx` - the detector's budget per megapixel, which is
+    # what actually caps a 4K frame; the per-image number below is the ceiling
+    # on top of it. RS's own default is 10 000, but 30 000 is what this
+    # workstation has been aligning with, and sending the stock value the day
+    # the app started sending the key at all would have quietly detected a
+    # third of the features on every project.
+    max_features_per_mpx: int = 30000
+    # `sfmMaxFeaturesPerImage`.
     max_features: int = 60000
+    # `sfmImagesOverlap`, Low | Medium | High. Medium is RS's default. It is
+    # the first thing to raise on an alignment that split (CLAUDE.md 7.1):
+    # across a cut, frame k and k+1 are unrelated, so the sequential
+    # preselection has nothing to work with and the image overlap must carry
+    # the match instead.
+    image_overlap: Literal["Low", "Medium", "High"] = "Medium"
     # Keep only the largest component. An alignment that splits produces several
     # components, each in its own arbitrary coordinate frame — LFS can consume
     # exactly one, so this stays on. What it discards is reported, never silent.
@@ -225,6 +247,13 @@ class RCDefaults(BaseModel):
     # RC's Z-up frame into the NeRF Y-up one the registration uses. Off only if
     # a future RC build starts exporting both in agreement.
     normalise_for_lfs: bool = True
+    # `-save <rc_output>/<slug>.rsproj` at the end of the alignment. RS runs the
+    # whole .rscmd on an unsaved in-memory project and drops it on -quit, so
+    # without this verb there is nothing left to reopen: re-inspecting an
+    # alignment, placing control points on a split (CLAUDE.md 7.1 - a GUI-only
+    # operation) or re-exporting means re-aligning from scratch. The .rsproj
+    # lives in rc_output/, so a re-alignment resets it with the rest of step 3.
+    save_project: bool = True
     # COLMAP registration export (TODO P1). Kept alongside transforms.json, not
     # instead of it: the coverage check, the camera overlay and the preview all
     # read the NeRF export, and LFS picks COLMAP over it on its own anyway.
@@ -297,12 +326,12 @@ SECTIONS = ("extract", "curate", "rc", "lfs", "export", "blender", "viewer")
 
 # ── Load / save ──────────────────────────────────────────────────────────────
 
-def _deep_merge(base: dict, patch: dict) -> dict:
+def deep_merge(base: dict, patch: dict) -> dict:
     """Merge patch into base recursively. Patch values win; base keys survive."""
     out = dict(base)
     for key, value in patch.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], value)
+            out[key] = deep_merge(out[key], value)
         else:
             out[key] = value
     return out
@@ -324,7 +353,7 @@ def load_defaults() -> AppDefaults:
     except (json.JSONDecodeError, OSError):
         # A corrupt file must not brick the app — fall back to code defaults.
         return AppDefaults()
-    return AppDefaults.model_validate(_deep_merge(AppDefaults().model_dump(), raw))
+    return AppDefaults.model_validate(deep_merge(AppDefaults().model_dump(), raw))
 
 
 def _write(defaults: AppDefaults) -> None:
@@ -335,7 +364,7 @@ def _write(defaults: AppDefaults) -> None:
 def save_defaults(patch: dict[str, Any]) -> AppDefaults:
     """Deep-merge a partial payload over the stored defaults and persist."""
     current = load_defaults().model_dump()
-    merged = AppDefaults.model_validate(_deep_merge(current, patch))
+    merged = AppDefaults.model_validate(deep_merge(current, patch))
     merged.schema_version = SCHEMA_VERSION
     _write(merged)
     return reload_defaults()

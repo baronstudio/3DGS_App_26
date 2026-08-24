@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from backend.api.routes.pipeline import is_running
 from backend.api.websocket import broadcast
 from backend.core.curate.select import DROP, KEEP
+from backend.core.defaults import deep_merge
 from backend.core.project_ops import (
     RESETTABLE_STEPS,
     archive_to_zip,
@@ -545,16 +546,6 @@ class PatchProjectBody(BaseModel):
     overrides: Optional[dict] = None
 
 
-def _deep_merge(base: dict, patch: dict) -> dict:
-    out = dict(base)
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], value)
-        else:
-            out[key] = value
-    return out
-
-
 @router.patch("/{id}")
 async def patch_project(
     id: str,
@@ -585,7 +576,7 @@ async def patch_project(
             current = json.loads(project.settings_json or "{}")
         except json.JSONDecodeError:
             current = {}
-        project.settings_json = json.dumps(_deep_merge(current, body.settings))
+        project.settings_json = json.dumps(deep_merge(current, body.settings))
 
     selection = None
     if body.overrides is not None:

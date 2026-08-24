@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.core.config import app_config
-from backend.core.defaults import RCDefaults, _deep_merge, load_defaults
+from backend.core.defaults import RCDefaults, deep_merge, load_defaults
 from backend.core.proc import (
     ProcessAborted,
     iter_lines,
@@ -20,6 +20,7 @@ from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
     normalise_transforms,
 )
+from backend.core.steps.rc_progress import RCProgressTracker, plan_from_script
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
@@ -44,13 +45,43 @@ def resolve_rc_settings(settings: dict) -> RCDefaults:
     nested = incoming.get("rc")
     patch_source = nested if isinstance(nested, dict) else incoming
     patch = {k: v for k, v in patch_source.items() if k in base and v is not None}
-    return RCDefaults.model_validate(_deep_merge(base, patch))
+    return RCDefaults.model_validate(deep_merge(base, patch))
 
 
 # -- Generated .rscmd --------------------------------------------------------
 
+# RS's alignment settings, as its own CLI keys. The names and the accepted
+# values come from the installed help - Help/en-US/tutorials/setkeyvaluetable.htm,
+# section "Alignment Settings" - not from the GUI labels, which differ ("Images'
+# overlap" is `sfmImagesOverlap`, "Max features per mpx" is
+# `sfmMaxFeaturesPerMpx`). A key RS does not know is an error and stops the
+# script, so this map is the one place they are spelled.
+def _alignment_settings(rc: RCDefaults) -> list[str]:
+    """`-set` lines for the four alignment knobs the app owns.
+
+    Until now the app owned none of them: `precision` and `max_features` were
+    on screen in two panels and reached nothing, because the .rscmd never
+    mentioned them and RS aligned with whatever its GUI was last left on.
+
+    They are *application* settings, not project ones - RS keeps them after the
+    run, so the values sent here are the ones its Alignment Settings panel will
+    show next time it is opened by hand. That is the price of controlling them
+    from the app at all: the CLI has no per-project scope for them.
+    """
+    return [
+        f'-set "sfmFeatureDetectionQuality={rc.feature_detection_quality}"',
+        f'-set "sfmMaxFeaturesPerMpx={rc.max_features_per_mpx}"',
+        f'-set "sfmMaxFeaturesPerImage={rc.max_features}"',
+        f'-set "sfmImagesOverlap={rc.image_overlap}"',
+    ]
+
+
 def build_rscmd(
-    frames_dir: Path, rc_output: Path, colmap_dir: Path, rc: RCDefaults
+    frames_dir: Path,
+    rc_output: Path,
+    colmap_dir: Path,
+    rc: RCDefaults,
+    project_name: str,
 ) -> Path:
     """Write the script RealityScan executes and return its path.
 
@@ -63,13 +94,28 @@ def build_rscmd(
     reconstruction. Every sequence goes through the same `-align`, and what we
     want out of it is a single component (CLAUDE.md 7).
     """
-    lines = [f'-addFolder "{frames_dir}"']
+    # First verb of every run: RS keeps a resource cache across sessions and
+    # it is the application's, not the project's - a stale entry from an
+    # earlier alignment of the same frames is exactly what a re-run is trying
+    # to get away from. It takes no argument, and the help's "save the project
+    # before clearing" does not apply here: nothing is open yet at line 1.
+    lines = ["-clearCache"]
+    lines += _alignment_settings(rc)
+    lines.append(f'-addFolder "{frames_dir}"')
     lines += [line.strip() for line in rc.extra_align_commands if line.strip()]
     lines.append("-align")
     if rc.merge_components:
         lines.append("-mergeComponents")
     if rc.keep_largest:
         lines.append("-selectMaximalComponent")
+    # Saved before the exports, not after: RS aborts the script on a verb it
+    # does not know (that is what `-mergeComponents` above is switchable for),
+    # and an alignment that took an hour must survive an export that does not
+    # run. Everything the script does afterwards is a file written beside the
+    # project, so nothing is lost by saving here.
+    if rc.save_project:
+        lines.append(f'-save "{rc_output / (project_name + ".rsproj")}"')
+
     lines += [
         f'-exportRegistration "{rc_output / "transforms.json"}"',
         f'-exportSparsePointCloud "{rc_output / "pointcloud.ply"}"',
@@ -419,6 +465,99 @@ async def check_colmap_export(
     return report
 
 
+# ── Progress ────────────────────────────────────────────────────────────────
+
+# Written by RS into rc_output/, so a re-alignment clears it with the rest of
+# step 3 and a finished run leaves the trace of its phases next to the export.
+_PROGRESS_FILENAME = "rc_progress.txt"
+
+# How often the file is re-read, and how long the bar may hold the same number
+# before it is re-sent. RS writes a few lines a second and a heartbeat every
+# second, so re-sending every 2 s keeps ProgressBar on a number while RS is
+# alive — and lets it fall back to its stripes if RS genuinely stops writing.
+_POLL_S = 0.5
+_REEMIT_S = 2.0
+
+
+async def _tail_progress(
+    path: Path,
+    tracker: RCProgressTracker,
+    broadcast_fn,
+    stop: asyncio.Event,
+) -> None:
+    """Follow RS's progress file and turn it into one bar for step 3.
+
+    Polled rather than streamed: the file is RealityScan's, opened and written
+    by another process, and there is no notification to wait on. Reads are
+    tolerant of failure — on Windows the writer may hold it briefly, and a
+    progress bar is never worth failing an alignment for.
+    """
+    try:
+        await _tail_progress_loop(path, tracker, broadcast_fn, stop)
+    except Exception:
+        # A bar that fails is a bar that stops moving, never a step that fails:
+        # this coroutine is awaited by `run_rc` after a successful alignment.
+        return
+
+
+async def _tail_progress_loop(
+    path: Path,
+    tracker: RCProgressTracker,
+    broadcast_fn,
+    stop: asyncio.Event,
+) -> None:
+    offset = 0
+    partial = b""
+    last_value = -1.0
+    last_emit = 0.0
+
+    while True:
+        finished = stop.is_set()
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                chunk = fh.read()
+                offset = fh.tell()
+        except OSError:
+            chunk = b""
+
+        if chunk:
+            partial += chunk
+            *lines, partial = partial.split(b"\n")
+            for raw in lines:
+                try:
+                    sample = tracker.feed(raw.decode("utf-8", errors="replace"))
+                except Exception:
+                    continue
+                if sample is None:
+                    continue
+
+                if sample.new_task:
+                    await broadcast_fn("rc", "INFO", f"[RS] {sample.task.label}…")
+
+                now = asyncio.get_running_loop().time()
+                moved = sample.overall - last_value >= 0.002
+                if not (moved or sample.new_task or now - last_emit >= _REEMIT_S):
+                    continue
+                eta = (
+                    f" · ~{sample.remaining_s:.0f}s left"
+                    if sample.remaining_s and sample.remaining_s > 1
+                    else ""
+                )
+                await broadcast_fn(
+                    "rc", "INFO",
+                    f"[RS] {sample.task.label} "
+                    f"{sample.task_fraction * 100:.0f}%{eta}",
+                    progress=sample.overall,
+                )
+                last_value = sample.overall
+                last_emit = now
+
+        if finished:
+            return
+        await asyncio.sleep(_POLL_S)
+
+
 # ── RC runner ───────────────────────────────────────────────────────────────
 
 async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
@@ -455,13 +594,25 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     rc = resolve_rc_settings(settings)
     colmap_dir = colmap_dataset.colmap_dataset_dir(project_path)
-    script = build_rscmd(frames_dir, rc_output, colmap_dir, rc)
+    script = build_rscmd(frames_dir, rc_output, colmap_dir, rc, project_path.name)
     await broadcast_fn(
         "rc", "INFO",
         "[RS] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
     )
 
-    cmd = [str(rc_exe), "-headless", "-execRSCMD", str(script)]
+    # `-writeProgress` is the only progress channel this binary has: RS is a
+    # GUI-subsystem exe, so the stdout loop below sees one EOF and nothing else,
+    # and `-printProgress` cannot be flushed from outside the process
+    # (CLAUDE.md §15.3). The trailing `1` is a heartbeat period in seconds, not
+    # a write interval — RS writes every change with or without it, and the
+    # `#timeout` lines it adds are what tells a plateau from a hang.
+    progress_file = rc_output / _PROGRESS_FILENAME
+    cmd = [
+        str(rc_exe),
+        "-writeProgress", str(progress_file), "1",
+        "-headless",
+        "-execRSCMD", str(script),
+    ]
     await broadcast_fn("rc", "INFO", f"[RS] Launching: {' '.join(cmd)}")
 
     loop = asyncio.get_running_loop()
@@ -469,6 +620,13 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     # Registered so /control abort can kill the tree from the outside — RC
     # launches workers of its own, so only a tree kill frees the GPU (core/proc.py).
     proc = spawn(cmd, project_path)
+
+    # The bar is fed from the file, not from this process's stdout. The plan
+    # comes from the script we just wrote, so the weights follow whatever this
+    # run actually asked RS to do (rc_progress.py).
+    tracker = RCProgressTracker(plan_from_script(script.read_text(encoding="utf-8")))
+    stop = asyncio.Event()
+    tail = asyncio.create_task(_tail_progress(progress_file, tracker, broadcast_fn, stop))
 
     # RealityScan.exe is a GUI-subsystem binary (PE subsystem 2), so it has no
     # console of its own and prints nothing here unless the script asks it to -
@@ -480,10 +638,20 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
             await broadcast_fn("rc", _classify_rc_line(line), line)
 
         returncode = await loop.run_in_executor(None, proc.wait)
+        # Drained here rather than in the `finally`: awaiting anything while
+        # this coroutine is being cancelled raises CancelledError again and
+        # would mask the abort. The last lines of the file are worth two
+        # seconds; on an abort they are worth nothing.
+        stop.set()
+        await asyncio.wait_for(tail, timeout=2)
     except asyncio.CancelledError:
         kill_tree(proc)
         raise
+    except asyncio.TimeoutError:
+        pass
     finally:
+        if not tail.done():
+            tail.cancel()
         killed = release(project_path, proc)
 
     if killed:
@@ -491,6 +659,16 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     if returncode != 0:
         raise RuntimeError(f"RealityScan exited with code {returncode}")
+
+    # Below the return code on purpose: on a failed run the empty progress file
+    # is a symptom, not the news, and saying "the bar was blind" over an
+    # alignment that never started would bury the error that did.
+    if tracker.current_id is None:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] No progress was reported - {progress_file.name} stayed empty. "
+            "The alignment itself is unaffected; only the bar was blind.",
+        )
 
     if rc.normalise_for_lfs:
         await _normalise_export_for_lfs(rc_output, broadcast_fn)

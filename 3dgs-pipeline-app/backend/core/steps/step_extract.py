@@ -15,6 +15,7 @@ from backend.core.proc import (
 )
 from backend.core.project_ops import reset_steps
 from backend.core.probe import probe_video
+from backend.core.sources import find_extraction_source
 
 # One line of an FFmpeg `-progress` block: a bare lowercase key, then a value
 # with no space in it. The value has to be anchored, because FFmpeg's own
@@ -36,13 +37,20 @@ def resolve_extract_settings(settings: dict) -> ExtractDefaults:
     Precedence is per-project > defaults > code fallback (CLAUDE.md §4), so only
     the keys the project actually carries are applied. A legacy payload holding a
     bare `fps` is read as an explicit absolute value.
+
+    The block is accepted nested under "extract" or flat, like `rc` and `lfs`:
+    nested is what `Project.settings_json` stores and what step 2 now sends, flat
+    is what the step was called with before it had a persisted layer.
     """
     base = load_defaults().extract.model_dump()
-    patch = {k: v for k, v in (settings or {}).items() if k in base and v is not None}
+    incoming = settings or {}
+    nested = incoming.get("extract")
+    patch_source = nested if isinstance(nested, dict) else incoming
+    patch = {k: v for k, v in patch_source.items() if k in base and v is not None}
 
-    if "fps" in (settings or {}) and "fps_mode" not in (settings or {}):
+    if "fps" in patch_source and "fps_mode" not in patch_source:
         patch["fps_mode"] = "absolute"
-        patch["fps_absolute"] = float(settings["fps"])
+        patch["fps_absolute"] = float(patch_source["fps"])
 
     return ExtractDefaults.model_validate({**base, **patch})
 
@@ -224,17 +232,11 @@ async def _clear_previous_run(project_path: Path, broadcast_fn) -> None:
 async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
     """FFmpeg frame extraction from the first .mp4/.mov in project_path/input/."""
     input_dir = project_path / "input"
-    video_files = list(input_dir.glob("*.mp4")) + list(input_dir.glob("*.mov"))
-    if not video_files:
+    # Shared with the step 2 panel, which badges this file as the extraction
+    # source: two statements of the same rule are two rules waiting to disagree.
+    input_video = find_extraction_source(input_dir)
+    if input_video is None:
         raise FileNotFoundError(f"No .mp4 or .mov found in {input_dir}")
-    input_video = video_files[0]
-
-    # Only once the source is known to exist: a missing video must not cost the
-    # frames already on disk.
-    await _clear_previous_run(project_path, broadcast_fn)
-
-    frames_dir = project_path / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
 
     extract = resolve_extract_settings(settings)
     quality = extract.quality
@@ -243,6 +245,17 @@ async def run_extract(project_path: Path, broadcast_fn, settings: dict) -> dict:
     ffmpeg_path, ffmpeg_note = resolve_ffmpeg_path(app_config.tools.ffmpeg_path)
     if ffmpeg_note:
         await broadcast_fn("extract", "WARNING", f"[FFmpeg] {ffmpeg_note}")
+
+    # Only once the source *and* the binary are known to exist. The reset used
+    # to sit above resolve_ffmpeg_path, which raises when there is no ffmpeg
+    # configured and none on PATH - so a misconfigured tool path deleted the
+    # frames it was then unable to re-extract. Steps 3 and 4 clear after their
+    # exe check for the same reason.
+    await _clear_previous_run(project_path, broadcast_fn)
+
+    frames_dir = project_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
     loop = asyncio.get_running_loop()
 
     # Probe first: the `auto` fps mode needs the real duration and cadence.
