@@ -11,8 +11,21 @@ import { useVersion } from '@/hooks/useVersion';
 const AppTitle: React.FC = () => {
   const version = useVersion();
 
-  const label = version?.version ? `v${version.version}` : null;
+  // A dirty sync means the pushed files were not exactly the commit named, so
+  // the date is approximate — mark it rather than let it read as exact.
+  const label = version?.version ? `v${version.version}${version.dirty ? '*' : ''}` : null;
   const commit = version?.commit_short ?? null;
+  // On a machine fed by the sync, say so: its own git is not what was asked.
+  const provenance =
+    version?.source === 'sync'
+      ? [
+          `synced from ${version.synced_from ?? 'another machine'}`,
+          version.synced_at?.slice(0, 19).replace('T', ' '),
+          version.dirty ? 'working tree differed from this commit' : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : null;
 
   return (
     <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 select-none items-baseline gap-2 md:flex">
@@ -30,7 +43,12 @@ const AppTitle: React.FC = () => {
             version?.commit_url ? 'hover:border-slate-500 hover:text-slate-200' : 'cursor-default'
           }`}
           title={
-            [version?.commit, version?.branch && `branch ${version.branch}`, version?.commit_date]
+            [
+              version?.commit,
+              version?.branch && `branch ${version.branch}`,
+              version?.commit_date,
+              provenance,
+            ]
               .filter(Boolean)
               .join('\n') || undefined
           }

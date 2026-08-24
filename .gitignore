@@ -38,3 +38,8 @@ imgui.ini
 
 # Local dev tooling — machine-specific, not for the repo
 scripts/sync_staging.sh
+
+# Written by scripts/sync_staging.sh on the machine it pushes to: which commit
+# those copied files came from, since the sync never touches that clone's .git.
+# One machine's state, never the repository's.
+3dgs-pipeline-app/.version_stamp.json
