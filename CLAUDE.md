@@ -653,15 +653,24 @@ The price is that the mask run rewrites the whole dataset, `images/` and
 behaviour: masks exported in one pass with their images cannot drift from them.
 
 **Two things still have to be repaired, and both are measured.** The masks
-arrive at **half** the image size (973×543 image, 486×271 mask, over all 251),
-and neither `mvsPreviewDownscaleFactor=1` nor `txtImageDownscaleColor=1`
-changes it — it is the mask layer's own resolution. LichtFeld Studio does not
-resize, it refuses. And they are RGBA with an opaque alpha, like the exported
-images. `rc_alpha.fit_dataset_masks` resizes them `INTER_NEAREST` to the exact
-size of the image beside them and flattens them to greyscale, in place,
-idempotently — 1 s for 251 masks. A mask is a silhouette of a preview mesh; a
-nearest 2× is half a pixel of edge against a mesh that is metres of
-approximation.
+arrive at **half** the image size (973×543 image, 486×271 mask, over all 251).
+Nothing reaches that: `mvsPreviewDownscaleFactor=1`, `txtImageDownscaleColor=1`
+and `-calculateHighModel` were each tried and the masks came out at half every
+time — it is the mask *layer*'s own resolution, not the depth map's and not the
+mesh's. LichtFeld Studio does not resize, it refuses. And they are RGBA with an
+opaque alpha, like the exported images. `rc_alpha.fit_dataset_masks` resizes
+them `INTER_NEAREST` to the exact size of the image beside them and flattens
+them to greyscale, in place, idempotently — 1 s for 251 masks.
+
+**The half is proportional, not absolute**, which is the thing to expect
+rather than hope away: a 3800 px frame gets a 1900 px mask, so one mask pixel
+is always a 2×2 square of image pixels. A bigger source does not remove the
+blocking, it makes it a smaller fraction of the frame — and it genuinely
+improves the *mesh* silhouette, which is the other half of what a coarse mask
+looks like. The resize filter is not where the sharpness goes: RS's render is
+properly anti-aliased at half resolution (189 grey levels, nothing quantised
+below it), and `INTER_LINEAR` is visually indistinguishable because LFS
+thresholds at 0.5 anyway. `rc_alpha.fit_dataset_masks` carries the measurement.
 
 **`-clearCache` is deliberately absent.** After a mesh it answers *"Cache
 contains current scene modifications. [err:5607]"*, fails the script and pops

@@ -224,14 +224,32 @@ def fit_dataset_masks(dataset: Path) -> dict[str, Any]:
     assumed (publicsemple_truck, 251 images):
 
     * **The masks are half size.** `00000.png` is 973x543 and its mask
-      486x271, one for one, over the whole set. Nothing exposed changes it:
-      `mvsPreviewDownscaleFactor=1` and `txtImageDownscaleColor=1` were both
-      tried and the masks came out at half either way, so the resolution is
-      the mask *layer*'s and not the depth map's. LichtFeld Studio does not
-      resize — it refuses (`Mask '{}' is {}x{} but image '{}' is {}x{}`) — so
-      the app resizes, `INTER_NEAREST`, to the exact size of the image beside
-      it. A mask is a silhouette of a preview mesh; a nearest 2x is half a
-      pixel of edge against a mesh that is metres of approximation.
+      486x271, one for one, over the whole set. Nothing reaches it:
+      `mvsPreviewDownscaleFactor=1`, `txtImageDownscaleColor=1` and
+      `-calculateHighModel` were each tried and the masks came out at half
+      every time, so the resolution belongs to the mask *layer* and not to the
+      depth map or the mesh. LichtFeld Studio does not resize — it refuses
+      (`Mask '{}' is {}x{} but image '{}' is {}x{}`) — so the app resizes,
+      `INTER_NEAREST`, to the exact size of the image beside it.
+
+      **The half is proportional, not absolute**: a 3800 px frame gets a
+      1900 px mask, so one mask pixel is always a 2x2 square of image pixels
+      and a bigger source does not remove the blocking, it only makes it a
+      smaller fraction of the frame. What a bigger source really improves is
+      the mesh silhouette underneath it.
+
+      `INTER_NEAREST` is settled rather than a compromise. Diagnosed on
+      `masks/00105.png` after a `-calculateHighModel` run: 99 % of its 2x2
+      blocks are constant, which is the upscale's own signature, and RS's
+      original render recovers exactly as `mask[::2, ::2]`. That render is
+      properly anti-aliased — 189 distinct grey levels, and its 4x4 and 8x8
+      blocks are *not* constant, so nothing is quantised below half. Redoing
+      the upscale with `INTER_LINEAR` is visually indistinguishable and
+      LichtFeld Studio thresholds at 0.5 either way
+      (`Mask file loading enabled (invert=false, threshold=0.5)`), so the
+      filter is not where the sharpness went. The visible staircase is the
+      *mesh* outline: flat horizontal runs of the top silhouette measured
+      median 2 and p90 7 render pixels.
 
     * **They are RGBA with an opaque alpha.** So are the exported images —
       RealityScan writes 4-channel PNGs whatever `undistortImagesWicPixlFormat`

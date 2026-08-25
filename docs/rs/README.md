@@ -105,7 +105,7 @@ Measured on `publicsemple_truck` (251 images of ~1 Mpx) through its saved
 | `-selectAllImages` | **none** | — | |
 | `-calculatePreviewModel` | `20560` | 2.3 s | |
 | `-calculateNormalModel` / `-calculateHighModel` | `20560` | — | **the same id as preview** — one task for all three qualities |
-| `-generateMaskFromMesh` | `62` | 33 s cold, 6 s cached | reports no fraction at all, only `#timeout` heartbeats at `0.00` |
+| `-generateMaskFromMesh` | `62` | 33 s cold, 6 s cached | reports no fraction at all, only `#timeout` heartbeats at `0.00`; renders the mask layer at **half** the image resolution — see below |
 | `-exportRegistration <colmap> <params>` | `20576` | 4.3 s | with `colmapExportMasks=1`, writes `masks/` beside `images/` |
 | `-exportSelectedModel <obj>` | `6`, `21861` | 0.15 s | not used by the app; measured while checking the mesh was real |
 | `-exportMapsAndMask <folder> <params>` | `36` | 0.3 s | **fails**: "Feature not implemented" |
@@ -128,3 +128,32 @@ goes through the COLMAP exporter instead.
 drew a full-screen red banner over the desktop, and the `err:5607` one launched
 the crash reporter as well. Anything the app sends RealityScan has to succeed,
 not merely be handled.
+
+## The mask layer is half resolution, and nothing exposed changes that
+
+`-generateMaskFromMesh` writes a mask layer at half the image's linear size —
+a 973×543 image gets a 486×271 mask, over all 251 of them. Three things were
+tried and none of them moved it:
+
+| Tried | Result |
+|---|---|
+| `-set "mvsPreviewDownscaleFactor=1"` | still half |
+| `-set "txtImageDownscaleColor=1"` | still half |
+| `-calculateHighModel` instead of preview | still half |
+
+So it belongs to the mask layer, not to the depth map and not to the mesh. It
+is also **proportional**: a 3800 px frame gets a 1900 px mask, so one mask
+pixel is always a 2×2 square of image pixels and a bigger source does not
+remove the blocking.
+
+The render itself is fine — 189 distinct grey levels, properly anti-aliased,
+and its 4×4 and 8×8 blocks are *not* constant, so nothing is quantised below
+half. After `rc_alpha.fit_dataset_masks` has doubled it, 99 % of the file's
+2×2 blocks are constant and the original recovers exactly as `mask[::2, ::2]`
+— that is the signature of the upscale and the way to tell it apart from a
+coarse mesh. `INTER_LINEAR` instead of `INTER_NEAREST` is visually
+indistinguishable, because LichtFeld Studio thresholds at 0.5 either way.
+
+**One lead is untested**: `ImageDepthMapDownscale` / `inpImageDepthMapDownscale`
+is a *per-input* setting in RS's Selected-inputs panel rather than a global
+reconstruction one, which would explain why every global key above was a no-op.

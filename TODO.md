@@ -260,3 +260,16 @@ Left open on purpose:
 - **`frontend/src/api/client.ts` hardcodes `http://localhost:8000`** — still
   open, and CLAUDE.md §12's 2026-08-22 row says otherwise. Moved up to **P5**
   above with the line references.
+- **RealityScan's mask layers render at half the image resolution**, and none
+  of the three global knobs reaches it: `mvsPreviewDownscaleFactor=1`,
+  `txtImageDownscaleColor=1` and `-calculateHighModel` all produce the same
+  half (CLAUDE.md §7.5). `rc_alpha.fit_dataset_masks` doubles them, which is a
+  2×2 block per mask pixel — proportional, so a 4K source does not remove it,
+  it only makes it a smaller fraction of the frame. **One lead is untested**:
+  `ImageDepthMapDownscale` / `inpImageDepthMapDownscale` is a *per-input*
+  setting in RS's Selected-inputs panel rather than a global reconstruction
+  one, which would explain why every global key was a no-op. One run on
+  `publicsemple_truck` answers it, and if it comes back full size the app
+  simply stops resizing. Decided **not worth doing now** (2026-08-25): at the
+  source sizes this pipeline actually shoots, half is not what the mask's
+  quality is limited by — the mesh silhouette is.
