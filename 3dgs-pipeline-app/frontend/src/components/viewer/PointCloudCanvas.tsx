@@ -60,6 +60,7 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
   const pointsRef = useRef<THREE.Points | null>(null);
   const rigRef = useRef<CameraRig | null>(null);
   const boxRef = useRef<RegionBoxHandle | null>(null);
+  const gizmoRef = useRef<TransformControls | null>(null);
   // The box the gizmo is writing into. Read back on every change, so the
   // callbacks below need the shape (frame, source, provenance) that came in.
   const regionRef = useRef<Region | null>(region);
@@ -292,19 +293,19 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
   }, [flipCloud]);
 
   // ── The gizmo ─────────────────────────────────────────────────────────────
+  //
+  // Built **once** per box and re-pointed by `setMode` below, not rebuilt per
+  // mode. Switching mode is a click, and tearing down a gizmo is neither free
+  // nor, in three 0.169, safe (see the teardown at the end of this effect).
   useEffect(() => {
     const scene = sceneRef.current;
     const camera = cameraRef.current;
     const renderer = rendererRef.current;
     const controls = controlsRef.current;
     const handle = boxRef.current;
-    if (!scene || !camera || !renderer || !controls || !handle || !regionMode) {
-      return undefined;
-    }
+    if (!scene || !camera || !renderer || !controls || !handle) return undefined;
 
     const gizmo = new TransformControls(camera, renderer.domElement);
-    gizmo.setMode(regionMode);
-    gizmo.attach(handle.mesh);
 
     // Without this every drag also orbits the camera, because OrbitControls is
     // listening to the same pointer.
@@ -327,17 +328,59 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
     // what goes into the scene is its helper, and adding the controls object
     // itself would put a non-Object3D in the graph.
     const helper = gizmo.getHelper();
+    helper.visible = false;   // until a mode is chosen — `attach` turns it on
     scene.add(helper);
+    gizmoRef.current = gizmo;
 
     return () => {
       gizmo.removeEventListener('dragging-changed', onDragging as never);
       gizmo.removeEventListener('objectChange', onChange);
       gizmo.detach();
       scene.remove(helper);
-      gizmo.dispose();
+
+      // **Not `gizmo.dispose()`.** three 0.169 moved TransformControls from
+      // Object3D onto Controls and left its `dispose()` calling
+      // `this.traverse(…)`, which no longer exists — so the tidy-up throws
+      // `this.traverse is not a function` and takes the React tree down with
+      // it. `disconnect()` is the half that matters (it is what removes the
+      // pointer listeners from the canvas); the geometries and materials are
+      // walked here instead, off the helper, which *is* an Object3D. They are
+      // safe to free: every one of them is built inside the
+      // `TransformControlsGizmo` constructor, so nothing is shared with the
+      // next gizmo.
+      gizmo.disconnect();
+      helper.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        mesh.geometry?.dispose();
+        const material = mesh.material;
+        if (Array.isArray(material)) material.forEach((m) => m.dispose());
+        else material?.dispose();
+      });
+
+      gizmoRef.current = null;
       controls.enabled = true;
       draggingRef.current = false;
     };
+  }, [Boolean(region)]);
+
+  // Which handle is live. `null` detaches, which hides the helper and makes
+  // the controls inert — `pointerDown` returns early with no object.
+  //
+  // `Boolean(region)` is in the deps as well as the mode: the region arrives
+  // from the API after this component has mounted, so the gizmo above is built
+  // on a later commit than this effect's first run. Without it the mode would
+  // never be applied to a gizmo that did not exist yet, and the box would sit
+  // there with no handles at all.
+  useEffect(() => {
+    const gizmo = gizmoRef.current;
+    const handle = boxRef.current;
+    if (!gizmo || !handle) return;
+    if (regionMode) {
+      gizmo.setMode(regionMode);
+      gizmo.attach(handle.mesh);
+    } else {
+      gizmo.detach();
+    }
   }, [regionMode, Boolean(region)]);
 
   // ── Point size ─────────────────────────────────────────────────────────────
