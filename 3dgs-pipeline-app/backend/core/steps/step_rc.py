@@ -449,9 +449,12 @@ async def check_alignment_coverage(
 # -- COLMAP export check -----------------------------------------------------
 
 async def check_colmap_export(
-    project_path: Path, rc: RCDefaults, broadcast_fn
+    project_path: Path, rc: RCDefaults, broadcast_fn, step: str = "rc"
 ) -> dict:
     """Did the COLMAP dataset step 4 wants to train on actually get written?
+
+    `step` is the broadcast name: the mask run re-exports the same dataset and
+    runs the same check, under its own name (step_masks.py).
 
     RealityScan can skip an export without failing the run: a bad export-params
     file is `[err:5617]` on stderr and exit code 0. Nothing checked, so step 4
@@ -473,7 +476,7 @@ async def check_colmap_export(
 
     if not report["found"]:
         await broadcast_fn(
-            "rc", "WARNING",
+            step, "WARNING",
             f"[RS] The COLMAP export was requested but nothing usable came out "
             f"of it ({report['reason']}). Step 4 will fall back to "
             f"transforms.json, whose intrinsics are one median for every image "
@@ -486,7 +489,7 @@ async def check_colmap_export(
     # calibration, which is the very thing this route is taken to avoid.
     if report["cameras"] <= 1:
         await broadcast_fn(
-            "rc", "WARNING",
+            step, "WARNING",
             f"[RS] COLMAP dataset written with {report['cameras']} camera for "
             f"{report['images']} images - RS undistorts each image to its own "
             f"size, so one shared intrinsic is the failure the NeRF path "
@@ -494,7 +497,7 @@ async def check_colmap_export(
         )
     else:
         await broadcast_fn(
-            "rc", "SUCCESS",
+            step, "SUCCESS",
             f"[RS] COLMAP dataset ready in {dataset.name}/ - "
             f"{report['cameras']} cameras, {report['images']} images, "
             f"{report['file_type']} model"
@@ -506,7 +509,7 @@ async def check_colmap_export(
     # one shows up is here (rc_export_params.py).
     if report["file_type"] != rc.colmap.file_type:
         await broadcast_fn(
-            "rc", "WARNING",
+            step, "WARNING",
             f"[RS] COLMAP model asked for as {rc.colmap.file_type} and written "
             f"as {report['file_type']} - RealityScan ignored the requested "
             f"colmapFileType token. Harmless (LFS reads both), but the ASCII "
@@ -530,11 +533,12 @@ _POLL_S = 0.5
 _REEMIT_S = 2.0
 
 
-async def _tail_progress(
+async def tail_progress(
     path: Path,
     tracker: RCProgressTracker,
     broadcast_fn,
     stop: asyncio.Event,
+    step: str = "rc",
 ) -> None:
     """Follow RS's progress file and turn it into one bar for step 3.
 
@@ -542,9 +546,13 @@ async def _tail_progress(
     by another process, and there is no notification to wait on. Reads are
     tolerant of failure — on Windows the writer may hold it briefly, and a
     progress bar is never worth failing an alignment for.
+
+    `step` is the broadcast name, because step 3 has two RealityScan runs that
+    report to the same wizard step under different names: the alignment
+    (`rc`) and the mask generation (`masks`, step_masks.py).
     """
     try:
-        await _tail_progress_loop(path, tracker, broadcast_fn, stop)
+        await _tail_progress_loop(path, tracker, broadcast_fn, stop, step)
     except Exception:
         # A bar that fails is a bar that stops moving, never a step that fails:
         # this coroutine is awaited by `run_rc` after a successful alignment.
@@ -556,6 +564,7 @@ async def _tail_progress_loop(
     tracker: RCProgressTracker,
     broadcast_fn,
     stop: asyncio.Event,
+    step: str,
 ) -> None:
     offset = 0
     partial = b""
@@ -584,7 +593,7 @@ async def _tail_progress_loop(
                     continue
 
                 if sample.new_task:
-                    await broadcast_fn("rc", "INFO", f"[RS] {sample.task.label}…")
+                    await broadcast_fn(step, "INFO", f"[RS] {sample.task.label}…")
 
                 now = asyncio.get_running_loop().time()
                 moved = sample.overall - last_value >= 0.002
@@ -596,7 +605,7 @@ async def _tail_progress_loop(
                     else ""
                 )
                 await broadcast_fn(
-                    "rc", "INFO",
+                    step, "INFO",
                     f"[RS] {sample.task.label} "
                     f"{sample.task_fraction * 100:.0f}%{eta}",
                     progress=sample.overall,
@@ -689,7 +698,7 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     # run actually asked RS to do (rc_progress.py).
     tracker = RCProgressTracker(plan_from_script(script.read_text(encoding="utf-8")))
     stop = asyncio.Event()
-    tail = asyncio.create_task(_tail_progress(progress_file, tracker, broadcast_fn, stop))
+    tail = asyncio.create_task(tail_progress(progress_file, tracker, broadcast_fn, stop))
 
     # RealityScan.exe is a GUI-subsystem binary (PE subsystem 2), so it has no
     # console of its own and prints nothing here unless the script asks it to -

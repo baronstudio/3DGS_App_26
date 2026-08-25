@@ -32,9 +32,10 @@ function formatElapsed(seconds: number): string {
 
 // `curate` is step 2's second phase and reports under its own name, like the
 // store's own map — without it the second bar of step 2 knew no status at all,
-// so it never turned green and never went indeterminate.
+// so it never turned green and never went indeterminate. `masks` is step 3's,
+// and was added with it rather than after the same bug a second time.
 const stepNameToIndex: Record<string, number> = {
-  extract: 2, curate: 2, rc: 3, lfs: 4, export: 5, blender: 6,
+  extract: 2, curate: 2, rc: 3, masks: 3, lfs: 4, export: 5, blender: 6,
 };
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({ step, label }) => {

@@ -88,6 +88,9 @@ const stepNameToIndex: Record<StepName, number> = {
   // Curation is step 2's second phase, so it reports against the same step.
   curate: 2,
   rc: 3,
+  // The mask run is step 3's second RealityScan process, the same shape as
+  // `curate` being step 2's second phase (TODO P4).
+  masks: 3,
   lfs: 4,
   export: 5,
   blender: 6,

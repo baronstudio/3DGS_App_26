@@ -4,7 +4,9 @@ import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
-import type { RCImageOverlap, RCSettingsType, RegionDefaults } from '@/types';
+import type {
+  MaskGenerationDefaults, RCImageOverlap, RCSettingsType, RegionDefaults,
+} from '@/types';
 
 interface RCSettingsProps {
   settings: RCSettingsType;
@@ -29,6 +31,26 @@ const REGION_OPTIONS: Array<{ value: RegionDefaults['mode']; label: string; hint
 
 const DEFAULT_REGION: RegionDefaults = { mode: 'auto', scale: [1, 1, 1], export: true };
 
+const DEFAULT_MASKS: MaskGenerationDefaults = {
+  enabled: false,
+  mesh_quality: 'preview',
+  use_region: true,
+  save_project_after: true,
+  preview_downscale: 4,
+  normal_downscale: 2,
+  gpu_acceleration: true,
+};
+
+// What each quality costs. Measured on publicsemple_truck, 251 images of about
+// one megapixel; the ratios are what carry over, not the seconds.
+const MESH_OPTIONS: Array<{
+  value: MaskGenerationDefaults['mesh_quality']; label: string; hint: string;
+}> = [
+  { value: 'preview', label: 'Preview', hint: 'seconds — enough for a silhouette' },
+  { value: 'normal', label: 'Normal', hint: 'minutes' },
+  { value: 'high', label: 'High', hint: 'long, and a mask does not need it' },
+];
+
 const OVERLAP_OPTIONS: Array<{ value: RCImageOverlap; hint: string }> = [
   { value: 'Low', hint: 'below 20 %' },
   { value: 'Medium', hint: 'the usual' },
@@ -45,6 +67,8 @@ const RCSettings: React.FC<RCSettingsProps> = ({ settings, onChange }) => {
   // assumed present.
   const region = settings.region ?? DEFAULT_REGION;
   const setRegion = (next: RegionDefaults) => update('region', next);
+  const masks = settings.masks ?? DEFAULT_MASKS;
+  const setMasks = (next: MaskGenerationDefaults) => update('masks', next);
 
   return (
     <div className="space-y-6">
@@ -214,6 +238,69 @@ const RCSettings: React.FC<RCSettingsProps> = ({ settings, onChange }) => {
             subject, and a little air around it is usually what you want.
           </p>
         </div>
+      )}
+
+      <Separator className="bg-slate-700/50" />
+
+      {/* Masks from the mesh — a separate RealityScan run over the saved
+          project, offered after the alignment and never part of it. */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <Label>Generate masks</Label>
+          <p className="text-xs text-slate-500">
+            Offers a second RealityScan run after the alignment: a mesh inside the box
+            you validate, rendered from every camera, exported into the dataset as
+            <code> masks/</code>. It never re-aligns, and it is what LichtFeld Studio
+            trains against with <code>--mask-mode</code>.
+          </p>
+        </div>
+        <Switch
+          checked={masks.enabled}
+          onCheckedChange={(v) => setMasks({ ...masks, enabled: v })}
+        />
+      </div>
+
+      {masks.enabled && (
+        <>
+          <div className="space-y-2">
+            <Label>Mesh quality</Label>
+            <RadioGroup
+              value={masks.mesh_quality}
+              onValueChange={(v) =>
+                setMasks({ ...masks, mesh_quality: v as MaskGenerationDefaults['mesh_quality'] })
+              }
+              className="flex flex-row flex-wrap gap-4"
+            >
+              {MESH_OPTIONS.map(({ value, label, hint }) => (
+                <div key={value} className="flex items-center gap-1.5">
+                  <RadioGroupItem value={value} id={`mesh-${value}`} />
+                  <Label htmlFor={`mesh-${value}`} className="text-slate-400 cursor-pointer">
+                    {label} <span className="text-slate-600">({hint})</span>
+                  </Label>
+                </div>
+              ))}
+            </RadioGroup>
+            <p className="text-xs text-slate-500">
+              The mask is the mesh's outline seen from the camera, not its surface, so
+              preview is normally the right answer. Everything else about this run lives
+              in Setup → RealityScan.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label>Mesh inside the validated box</Label>
+              <p className="text-xs text-slate-500">
+                Sends the box saved in <code>region/</code>. Off, or with nothing saved,
+                RealityScan uses the region the alignment left in the project.
+              </p>
+            </div>
+            <Switch
+              checked={masks.use_region}
+              onCheckedChange={(v) => setMasks({ ...masks, use_region: v })}
+            />
+          </div>
+        </>
       )}
     </div>
   );

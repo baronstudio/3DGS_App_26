@@ -179,6 +179,35 @@ def build_colmap_export_params(colmap: ColmapExportDefaults, dest: Path) -> Path
     return dest
 
 
+def build_mask_export_params(colmap: ColmapExportDefaults, dest: Path) -> Path:
+    """The same export, with `colmapExportMasks` on — the mask run's params.
+
+    There is deliberately no `rc_mask_params.py` and no second key family. The
+    masks RealityScan makes from the mesh are exported *by the COLMAP writer*,
+    which means they come out of the same `undist*` block as `images/`, cropped
+    the same way and named the same way, in `masks/` beside them. That is what
+    removes both of TODO P4's stated risks — the geometry and the naming — and
+    it removes them by construction rather than by a check afterwards.
+
+    Two entries are forced rather than read from the settings, because neither
+    has a defensible other value here: `colmapExportMasks` is what this export
+    exists for, and `colmapMaskExtension` must be `CME_EXT` or the files land
+    as `00000.mask.png`, which is RealityScan's own mask-layer convention and
+    not a name LichtFeld Studio pairs with anything.
+
+    The route it replaces was `-exportMapsAndMask folderName params.xml` and
+    its `ei*` keys, recovered from the executable's string table and correct as
+    far as they go — RealityScan honoured `eiExportImageList` and wrote
+    `imageList.txt`. It then answered **"Feature not implemented"** and failed
+    the export, on RealityScan 2.2.0.119430, with a real preview mesh and every
+    image selected. So that verb is not a route on this build.
+    """
+    return build_colmap_export_params(
+        colmap.model_copy(update={"export_masks": True, "mask_extension": "ext"}),
+        dest,
+    )
+
+
 def verify_against_saved_params(saved: Path) -> dict:
     """Compare our parameter names against an XML saved from RS's export dialog.
 

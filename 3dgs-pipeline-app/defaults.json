@@ -39,7 +39,7 @@
       "file_type": "ascii",
       "exclude_unreliable_tie_points": true,
       "export_masks": false,
-      "mask_extension": "mask_ext",
+      "mask_extension": "ext",
       "scene_rotate_x_deg": 180.0,
       "undistort": {
         "enabled": true,
@@ -66,6 +66,15 @@
         1.0
       ],
       "export": true
+    },
+    "masks": {
+      "enabled": false,
+      "mesh_quality": "preview",
+      "use_region": true,
+      "save_project_after": true,
+      "preview_downscale": 4,
+      "normal_downscale": 2,
+      "gpu_acceleration": true
     },
     "extra_align_commands": []
   },

@@ -42,7 +42,10 @@ export const RESETTABLE_STEPS = [2, 3, 4, 5, 6] as const;
 
 // 'curate' is the second phase of wizard step 2, not a seventh step: it gets
 // its own name so the UI can show its progress separately (CLAUDE.md §6).
-export type StepName = 'extract' | 'curate' | 'rc' | 'lfs' | 'export' | 'blender';
+// 'masks' is the same shape one step later: a second RealityScan run over the
+// saved alignment, reporting into wizard step 3 (TODO P4).
+export type StepName =
+  | 'extract' | 'curate' | 'rc' | 'masks' | 'lfs' | 'export' | 'blender';
 export type StepStatus = 'pending' | 'running' | 'done' | 'error' | 'aborted';
 export type LogLevel = 'INFO' | 'WARNING' | 'ERROR' | 'SUCCESS' | 'DEBUG';
 
@@ -101,6 +104,8 @@ export interface RCSettingsType {
   merge_components: boolean;
   /** `rc.region` — the seed the step-3 box editor starts from (SESSION 12). */
   region?: RegionDefaults;
+  /** `rc.masks` — the mask run offered after the alignment (TODO P4). */
+  masks?: MaskGenerationDefaults;
 }
 
 // LichtFeld Studio v0.5.3 strategies. 'default' sends no --strategy flag and
@@ -224,7 +229,36 @@ export interface RCDefaults {
   save_project: boolean;
   colmap: ColmapExportDefaults;
   region: RegionDefaults;
+  masks: MaskGenerationDefaults;
   extra_align_commands: string[];
+}
+
+/** `rc.masks` — the mask run of step 3 (TODO P4).
+ *
+ *  Not part of the alignment: a separate RealityScan process over the saved
+ *  `.rsproj`, which meshes inside the validated Reconstruction Region and
+ *  re-exports the COLMAP dataset with the mask layers in it.
+ */
+export interface MaskGenerationDefaults {
+  enabled: boolean;
+  mesh_quality: 'preview' | 'normal' | 'high';
+  use_region: boolean;
+  save_project_after: boolean;
+  preview_downscale: number;
+  normal_downscale: number;
+  gpu_acceleration: boolean;
+}
+
+/** What the mask run reports back — `rc_alpha.fit_dataset_masks`. */
+export interface MaskReport {
+  masks: number;
+  images: number;
+  matched: number;
+  resized: number;
+  unmatched: string[];
+  size: number[] | null;
+  state: 'none' | 'ready' | 'partial' | 'unusable';
+  note: string | null;
 }
 
 /** An oriented box, in the frame it says it is in — `region/region.json`.

@@ -24,7 +24,8 @@ a formality: a PNG set carrying alpha is very often a *render*, i.e. already
 pinhole, where RS's undistortion is close to a no-op and the sizes do line up.
 When they do not, the answer is on RS's side — masks generated from the
 Reconstruction Region and the mesh, exported by RS itself and therefore in RS's
-own geometry. That is a feature of its own and is not built.
+own geometry. That route exists now: `step_masks.py` drives it, and
+`fit_dataset_masks` below is where its output is checked and made usable.
 
 Pure module: no FastAPI.
 """
@@ -172,7 +173,7 @@ def deliver_masks(project_path: Path, dataset: Path) -> dict[str, Any]:
             "images. Nothing was copied — LichtFeld Studio would refuse them, "
             "and a mask that is off deletes real surface. Masks in RS's own "
             "geometry have to come from RS itself (Reconstruction Region + "
-            "mesh), which this app does not drive yet."
+            "mesh): that is the 'Generate the masks' run of step 3."
         )
         return report
 
@@ -193,4 +194,188 @@ def deliver_masks(project_path: Path, dataset: Path) -> dict[str, Any]:
         "export dropped the channel, but the geometry still matches, so "
         "LichtFeld Studio reads them from there."
     )
+    return report
+
+
+# ── The other direction: masks RealityScan made itself ──────────────────────
+
+def dataset_mask_images(dataset: Path) -> list[Path]:
+    """Every file under `<dataset>/masks/`, sorted by name — the export order."""
+    masks = dataset / "masks"
+    if not masks.is_dir():
+        return []
+    return sorted(
+        (
+            f for f in masks.rglob("*")
+            if f.is_file() and f.suffix.lower() in frame_files.FRAME_SUFFIXES
+        ),
+        key=lambda f: f.name,
+    )
+
+
+def fit_dataset_masks(dataset: Path) -> dict[str, Any]:
+    """Make RealityScan's own masks usable by LichtFeld Studio, in place.
+
+    The COLMAP exporter writes `masks/` beside `images/` with the *same*
+    basenames and through the *same* undistortion, so the pairing and the
+    geometry are right by construction — which is exactly what `deliver_masks`
+    above cannot achieve from step 2's source-resolution alpha. Two things are
+    still wrong on the way out of RealityScan 2.2, and both are measured, not
+    assumed (publicsemple_truck, 251 images):
+
+    * **The masks are half size.** `00000.png` is 973x543 and its mask
+      486x271, one for one, over the whole set. Nothing exposed changes it:
+      `mvsPreviewDownscaleFactor=1` and `txtImageDownscaleColor=1` were both
+      tried and the masks came out at half either way, so the resolution is
+      the mask *layer*'s and not the depth map's. LichtFeld Studio does not
+      resize — it refuses (`Mask '{}' is {}x{} but image '{}' is {}x{}`) — so
+      the app resizes, `INTER_NEAREST`, to the exact size of the image beside
+      it. A mask is a silhouette of a preview mesh; a nearest 2x is half a
+      pixel of edge against a mesh that is metres of approximation.
+
+    * **They are RGBA with an opaque alpha.** So are the exported images —
+      RealityScan writes 4-channel PNGs whatever `undistortImagesWicPixlFormat`
+      says. Rewriting the masks as single-channel greyscale is what CLAUDE.md
+      6.7 already says `masks/` holds, it removes any question about which
+      channel is the mask, and it costs a quarter of the bytes.
+
+    Anything that has no image to sit beside is left alone and counted: a mask
+    the export renamed or dropped is a fact worth reporting, never a file to
+    pair by position — position pairing is what `deliver_masks` refuses for
+    the same reason.
+
+    Idempotent: a mask that already matches its image and is already greyscale
+    is not rewritten. Never raises.
+    """
+    report: dict[str, Any] = {
+        "masks": 0,
+        "images": 0,
+        "matched": 0,
+        "resized": 0,
+        "unmatched": [],
+        "size": None,
+        "state": "none",
+        "note": None,
+    }
+    masks = dataset_mask_images(dataset)
+    images = _exported_images(dataset)
+    report["masks"] = len(masks)
+    report["images"] = len(images)
+    if not masks:
+        report["note"] = "RealityScan wrote no masks into the dataset."
+        return report
+
+    by_stem = {img.stem: img for img in images}
+    import cv2  # local: this module is imported by routes that never resize
+
+    for mask in masks:
+        image = by_stem.get(mask.stem)
+        if image is None:
+            report["unmatched"].append(mask.name)
+            continue
+        target = _dimensions(image)
+        data = cv2.imread(str(mask), cv2.IMREAD_UNCHANGED) if all(target) else None
+        if data is None:
+            report["unmatched"].append(mask.name)
+            continue
+        report["matched"] += 1
+
+        needs_resize = _dimensions(mask) != target
+        needs_flatten = data.ndim == 3
+        if not (needs_resize or needs_flatten):
+            continue
+
+        if needs_flatten:
+            # RS writes the same value in R, G and B and a constant 255 alpha,
+            # so one channel is the mask and the alpha is not.
+            data = data[:, :, 0]
+        if needs_resize:
+            data = cv2.resize(
+                data, (target[0], target[1]), interpolation=cv2.INTER_NEAREST
+            )
+            report["resized"] += 1
+        cv2.imwrite(str(mask), data)
+
+    report["size"] = list(_dimensions(masks[0]))
+    if report["matched"] == 0:
+        report["state"] = "unusable"
+        report["note"] = (
+            f"{len(masks)} mask(s) were exported but none of them names an "
+            f"image in the dataset. LichtFeld Studio pairs masks/<name> with "
+            f"images/<name>; nothing here does. The masks were left as they are."
+        )
+    elif report["unmatched"]:
+        report["state"] = "partial"
+        report["note"] = (
+            f"{report['matched']}/{len(masks)} masks matched an exported image "
+            f"({report['resized']} resized to fit). "
+            f"{len(report['unmatched'])} did not and were left alone."
+        )
+    else:
+        report["state"] = "ready"
+        resized = (
+            f", resized from half resolution to {report['size'][0]}x{report['size'][1]}"
+            if report["resized"] else ""
+        )
+        report["note"] = (
+            f"{report['matched']} mask(s) in the dataset's masks/, one per "
+            f"image, named to match{resized}."
+        )
+    return report
+
+
+def inspect_dataset_masks(dataset: Path) -> dict[str, Any]:
+    """The same answer as `fit_dataset_masks`, read-only — for the UI.
+
+    Headers only, no decode and no write: this runs on a GET that step 3 calls
+    on mount, and the durable answer about a mask run is the dataset itself,
+    not a log line the user scrolled past or a page reload threw away.
+    """
+    report: dict[str, Any] = {
+        "masks": 0,
+        "images": 0,
+        "matched": 0,
+        "mismatched": 0,
+        "size": None,
+        "state": "none",
+        "note": None,
+    }
+    masks = dataset_mask_images(dataset)
+    images = _exported_images(dataset)
+    report["masks"] = len(masks)
+    report["images"] = len(images)
+    if not masks:
+        report["note"] = "No masks in this dataset."
+        return report
+
+    by_stem = {img.stem: img for img in images}
+    for mask in masks:
+        image = by_stem.get(mask.stem)
+        if image is None:
+            continue
+        if _dimensions(mask) == _dimensions(image):
+            report["matched"] += 1
+        else:
+            report["mismatched"] += 1
+
+    report["size"] = list(_dimensions(masks[0]))
+    if report["matched"] == len(images) and not report["mismatched"]:
+        report["state"] = "ready"
+        report["note"] = (
+            f"{report['matched']} masks, one per image, at "
+            f"{report['size'][0]}x{report['size'][1]} and up."
+        )
+    elif report["matched"]:
+        report["state"] = "partial"
+        report["note"] = (
+            f"{report['matched']}/{report['images']} images have a mask that fits"
+            + (f", {report['mismatched']} do not" if report["mismatched"] else "")
+            + "."
+        )
+    else:
+        report["state"] = "unusable"
+        report["note"] = (
+            f"{report['masks']} mask(s) here, none of which fits an image of "
+            f"this dataset."
+        )
     return report

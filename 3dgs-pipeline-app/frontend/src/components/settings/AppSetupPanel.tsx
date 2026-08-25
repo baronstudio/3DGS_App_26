@@ -30,6 +30,7 @@ import type {
   AppDefaults,
   ColmapExportDefaults,
   DefaultsSection,
+  MaskGenerationDefaults,
   RegionDefaults,
   UndistortDefaults,
 } from '@/types';
@@ -232,6 +233,12 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
   const patchColmap = (key: keyof ColmapExportDefaults, value: unknown) => {
     setDraft((d) =>
       d ? { ...d, rc: { ...d.rc, colmap: { ...d.rc.colmap, [key]: value } } } : d,
+    );
+  };
+
+  const patchMasks = (key: keyof MaskGenerationDefaults, value: unknown) => {
+    setDraft((d) =>
+      d ? { ...d, rc: { ...d.rc, masks: { ...d.rc.masks, [key]: value } } } : d,
     );
   };
 
@@ -758,7 +765,7 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                 </Row>
                 <Row
                   label="Export masks"
-                  hint="Off — this app has no mask source yet, so there is nothing to export."
+                  hint="Off for an alignment: there are no mask layers in the project yet. The mask run below turns it on for its own export — that is how RealityScan's masks reach the dataset, undistorted the same way as the images and named to match."
                 >
                   <Switch
                     checked={draft.rc.colmap.export_masks}
@@ -766,13 +773,16 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   />
                 </Row>
                 {draft.rc.colmap.export_masks && (
-                  <Row label="Mask extension">
+                  <Row
+                    label="Mask extension"
+                    hint="`.ext` writes masks/00000.png, which is the name LichtFeld Studio pairs with images/00000.png. `.mask.ext` is RealityScan's own mask-layer convention and means nothing to LFS. The mask run forces `.ext` whatever this says."
+                  >
                     <Choice
                       value={draft.rc.colmap.mask_extension}
                       onChange={(v) => patchColmap('mask_extension', v)}
                       options={[
-                        { value: 'mask_ext', label: '.mask.ext' },
-                        { value: 'ext', label: '.ext' },
+                        { value: 'ext', label: '.ext — masks/00000.png' },
+                        { value: 'mask_ext', label: '.mask.ext — RS convention' },
                       ]}
                     />
                   </Row>
@@ -912,6 +922,81 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                     value={draft.rc.colmap.undistort.background_color}
                     placeholder="#000000"
                     onChange={(v) => patchUndistort('background_color', v)}
+                  />
+                </Row>
+
+                <SubHeading
+                  title="Masks from the mesh"
+                  note="A second RealityScan run, launched from step 3 once you have validated the region box — never part of the alignment, because the mesh is minutes and re-aligning to change a mask is not a thing anyone wants to do. It reopens rc_output/<project>.rsproj, meshes inside the region, renders each camera's view of that mesh, and re-exports the COLMAP dataset with the masks in it. That last part is what makes them usable: they come out of the same undistortion block as the images above and under the same names, so nothing has to pair them afterwards. They arrive at half resolution and the app resizes them, because LichtFeld Studio refuses a mask that is not exactly its image's size."
+                />
+                <Row
+                  label="Offer mask generation"
+                  hint="Shows the button in step 3. Off is the default: a project that does not need masks must not pay for a mesh."
+                >
+                  <Switch
+                    checked={draft.rc.masks.enabled}
+                    onCheckedChange={(v) => patchMasks('enabled', v)}
+                  />
+                </Row>
+                <Row
+                  label="Mesh quality"
+                  hint="Preview is what a silhouette needs — the mask is the mesh's outline seen from the camera, not its surface detail. Measured on a 251-image project: preview mesh 2.3 s, masks 33 s, export 4.3 s. High on 300 4K frames is not minutes."
+                >
+                  <Choice
+                    value={draft.rc.masks.mesh_quality}
+                    onChange={(v) => patchMasks('mesh_quality', v)}
+                    options={[
+                      { value: 'preview', label: 'Preview — fastest' },
+                      { value: 'normal', label: 'Normal' },
+                      { value: 'high', label: 'High — slowest' },
+                    ]}
+                  />
+                </Row>
+                <Row
+                  label="Use the validated region"
+                  hint="Sends -setReconstructionRegion region/region.rsbox when you have placed a box. Off, or with no box saved, RealityScan meshes inside whatever region the saved project already carries."
+                >
+                  <Switch
+                    checked={draft.rc.masks.use_region}
+                    onCheckedChange={(v) => patchMasks('use_region', v)}
+                  />
+                </Row>
+                <Row
+                  label="Save the project afterwards"
+                  hint="Keeps the mesh and the mask layers in the .rsproj, so re-exporting costs the export alone instead of another mesh."
+                >
+                  <Switch
+                    checked={draft.rc.masks.save_project_after}
+                    onCheckedChange={(v) => patchMasks('save_project_after', v)}
+                  />
+                </Row>
+                <Row
+                  label="Preview depth-map downscale"
+                  hint="mvsPreviewDownscaleFactor, RealityScan's default is 4. It changes how long the preview mesh takes and how fine it is — measured, it does not change the resolution the masks come out at."
+                >
+                  <NumField
+                    value={draft.rc.masks.preview_downscale}
+                    min={1}
+                    onChange={(v) => patchMasks('preview_downscale', v)}
+                  />
+                </Row>
+                <Row
+                  label="Normal depth-map downscale"
+                  hint="mvsNormalDownscaleFactor, RealityScan's default is 2."
+                >
+                  <NumField
+                    value={draft.rc.masks.normal_downscale}
+                    min={1}
+                    onChange={(v) => patchMasks('normal_downscale', v)}
+                  />
+                </Row>
+                <Row
+                  label="GPU acceleration for the mesh"
+                  hint="MvsGeometryGpuAccel. On, like RealityScan's own default — turn it off only if the mesh fails on this card."
+                >
+                  <Switch
+                    checked={draft.rc.masks.gpu_acceleration}
+                    onCheckedChange={(v) => patchMasks('gpu_acceleration', v)}
                   />
                 </Row>
               </div>

@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Settings, CheckCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Settings, CheckCircle, Scissors } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import client from '@/api/client';
 import { usePipelineStore } from '@/store/pipelineStore';
@@ -10,7 +10,7 @@ import { ProgressBar } from '@/components/panels/ProgressBar';
 import SceneViewer from '@/components/viewer/SceneViewer';
 import RCSettings from '@/components/settings/RCSettings';
 import SaveState from '@/components/settings/SaveState';
-import type { AlignmentReport, RCDefaults, RCSettingsType } from '@/types';
+import type { AlignmentReport, MaskReport, RCDefaults, RCSettingsType } from '@/types';
 
 /** Cameras / points from the RC log. */
 function parseRCStats(logs: { message: string; level: string }[]): { cameras: number | null; points: number | null } {
@@ -34,11 +34,15 @@ function parseRCStats(logs: { message: string; level: string }[]): { cameras: nu
 
 const Step3_RC: React.FC = () => {
   const { currentProjectId, stepStatuses, logs, setCurrentStep } = usePipelineStore();
-  const { startPipeline } = usePipeline();
+  const { startPipeline, generateMasks } = usePipeline();
   const { defaults } = useDefaults();
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alignment, setAlignment] = useState<AlignmentReport | null>(null);
+  // The last mask run of this session. It is not persisted anywhere — the
+  // durable answer is `masks/` in the dataset, which step 4 reads for itself.
+  const [maskRun, setMaskRun] = useState<MaskReport | null>(null);
+  const [masking, setMasking] = useState(false);
 
   // defaults.json under this project's overrides, saved on every change
   // (CLAUDE.md §4). `rc` is deep: `colmap` and its `undistort` block are edited
@@ -48,9 +52,10 @@ const Step3_RC: React.FC = () => {
     saving, savedAt, error: saveError,
   } = useProjectSettings<RCDefaults>(currentProjectId, 'rc', defaults?.rc ?? null);
 
-  const status = stepStatuses[3];  // step 3 = rc
+  const status = stepStatuses[3];  // step 3 = rc, and the mask run reports here too
   const isRunning = status === 'running';
   const isDone = status === 'done';
+  const masksEnabled = rcSettings?.masks?.enabled ?? false;
 
   const rcLogs = logs.filter((l) => l.step === 'rc');
   const { cameras, points } = parseRCStats(rcLogs);
@@ -67,11 +72,45 @@ const Step3_RC: React.FC = () => {
     }
   }, [currentProjectId]);
 
+  // Read off the dataset rather than off the log: the mask run's verdict has to
+  // survive a page reload, and what step 4 will actually read is the folder.
+  const fetchMasks = useCallback(async () => {
+    if (!currentProjectId) return;
+    try {
+      const res = await client.get<{ masks: MaskReport }>(
+        `/files/${currentProjectId}/masks`,
+      );
+      setMaskRun(res.data.masks.state === 'none' ? null : res.data.masks);
+    } catch {
+      setMaskRun(null);
+    }
+  }, [currentProjectId]);
+
   // On mount and whenever the step finishes: the report is a file, not a log line.
   useEffect(() => {
     if (isRunning) return;
     fetchAlignment();
-  }, [fetchAlignment, isRunning, isDone]);
+    fetchMasks();
+  }, [fetchAlignment, fetchMasks, isRunning, isDone]);
+
+  // The mask run drives step 3's status like the alignment does, so "it has
+  // finished" is the *transition* out of running, not the state on its own —
+  // clicking the button leaves the status on 'done' until the first WS message
+  // lands, and reading that as "already over" would close the bar instantly.
+  const sawMaskRunning = useRef(false);
+  useEffect(() => {
+    if (!masking) {
+      sawMaskRunning.current = false;
+      return;
+    }
+    if (status === 'running') {
+      sawMaskRunning.current = true;
+      return;
+    }
+    if (!sawMaskRunning.current) return;
+    setMasking(false);
+    fetchMasks();
+  }, [masking, status, fetchMasks]);
 
   const handleRun = async () => {
     if (!currentProjectId || !rcSettings) return;
@@ -83,6 +122,20 @@ const Step3_RC: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to start RS alignment';
       setError(msg);
+    }
+  };
+
+  const handleMasks = async () => {
+    if (!currentProjectId || !rcSettings) return;
+    setError(null);
+    setMaskRun(null);
+    try {
+      await flushRc();
+      setMasking(true);
+      await generateMasks(currentProjectId, { rc: rcSettings });
+    } catch (err: unknown) {
+      setMasking(false);
+      setError(err instanceof Error ? err.message : 'Failed to start the mask run');
     }
   };
 
@@ -237,6 +290,56 @@ const Step3_RC: React.FC = () => {
             withRegion={(rcSettings?.region?.mode ?? 'auto') !== 'off'}
             height={440}
           />
+        </div>
+      )}
+
+      {/* Masks from the mesh (TODO P4). Offered here, under the viewer, because
+          the box the run meshes inside is the one the user has just validated
+          in it — and never as part of the alignment: a second RealityScan
+          process over the saved .rsproj, so changing a mask never re-aligns. */}
+      {masksEnabled && isDone && (
+        <div className="rounded-lg bg-slate-800 border border-slate-700 px-4 py-3 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-slate-200">Masks from the mesh</p>
+              <p className="text-xs text-slate-500">
+                Meshes inside the region above, renders each camera's view of it, and
+                re-exports the COLMAP dataset with the masks in it. Step 4 picks them up
+                on its own.
+              </p>
+            </div>
+            <Button
+              onClick={handleMasks}
+              disabled={isRunning || masking || !currentProjectId}
+              className="shrink-0 bg-fuchsia-700 hover:bg-fuchsia-600 text-white gap-1"
+            >
+              <Scissors className="w-4 h-4" />
+              {masking ? 'Generating…' : 'Generate the masks'}
+            </Button>
+          </div>
+
+          {masking && <ProgressBar step="masks" label="Masks" />}
+
+          {maskRun && (
+            <div
+              className={`rounded border px-3 py-2 text-xs ${
+                maskRun.state === 'ready'
+                  ? 'bg-slate-900/40 border-slate-700 text-slate-300'
+                  : 'bg-amber-950/30 border-amber-700 text-amber-200/90'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">
+                  {maskRun.state === 'ready' ? 'Masks ready' : 'Masks incomplete'}
+                </span>
+                <span className="font-mono">
+                  {maskRun.matched}/{maskRun.images}
+                  {maskRun.size && ` · ${maskRun.size[0]}×${maskRun.size[1]}`}
+                </span>
+              </div>
+              {maskRun.note && <p className="mt-1 text-slate-400">{maskRun.note}</p>}
+            </div>
+          )}
         </div>
       )}
 

@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from backend.core import cameras, frames as frame_files, preview, sources
 from backend.core.config import app_config
+from backend.core.steps import colmap_dataset, rc_alpha
 from backend.core.steps.step_analyze import read_json
 from backend.db.database import get_session
 from backend.models.project import Project
@@ -98,6 +99,34 @@ async def read_alignment(project_id: str, session: Session = Depends(get_session
     slug = get_slug_from_id(project_id, session)
     report = read_json(PROJECTS_DIR / slug / "rc_output" / "alignment_check.json")
     return {"alignment": report}
+
+
+@router.get("/{project_id}/masks")
+async def read_masks(project_id: str, session: Session = Depends(get_session)):
+    """What the COLMAP dataset carries as masks, read off the dataset itself.
+
+    The mask run says how it went on the log bus, but a log line is gone on the
+    next page load and the durable answer is the folder step 4 will read. So
+    this asks the folder: headers only, no decode, no write
+    (`rc_alpha.inspect_dataset_masks`). 200 with `state: "none"` when there are
+    no masks — the caller is a UI panel.
+    """
+    slug = get_slug_from_id(project_id, session)
+    project_path = PROJECTS_DIR / slug
+    dataset, report = colmap_dataset.find_dataset(project_path)
+    if not report["found"]:
+        return {
+            "masks": {
+                "masks": 0, "images": 0, "matched": 0, "mismatched": 0,
+                "size": None, "state": "none",
+                "note": f"No COLMAP dataset yet ({report['reason']}).",
+            },
+            "dataset": None,
+        }
+    return {
+        "masks": await asyncio.to_thread(rc_alpha.inspect_dataset_masks, dataset),
+        "dataset": dataset.name,
+    }
 
 
 def _verdict_index(slug: str) -> tuple[dict, dict, dict]:

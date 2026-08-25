@@ -89,6 +89,42 @@ know about is a phase the step-3 bar sits still through (CLAUDE.md §15.3):
 | `-setReconstructionRegionAuto` | **none** |
 | `-setReconstructionRegionByDensity` | **none** |
 | `-scaleReconstructionRegion` | **none** |
-| `-setReconstructionRegion <file>` | not measured — it is prompt B that loads one |
+| `-setReconstructionRegion <file>` | **none** — measured in the mask run below |
 | `-exportReconstructionRegion <file>` | `21800`, ~0.02 s |
 | `-load <rsproj>` | `20532`, ~0.5 s |
+
+## The mask run's verbs (§7.5)
+
+Measured on `publicsemple_truck` (251 images of ~1 Mpx) through its saved
+`rc_output/publicsemple_truck.rsproj`, RealityScan 2.2.0.119430.
+
+| Verb | Task | Time | Note |
+|---|---|---|---|
+| `-load <rsproj>` | `20532` | 0.4 s | |
+| `-setReconstructionRegion <file>` | **none** | — | the row above said "not measured"; it is now, and it is silent like its three siblings |
+| `-selectAllImages` | **none** | — | |
+| `-calculatePreviewModel` | `20560` | 2.3 s | |
+| `-calculateNormalModel` / `-calculateHighModel` | `20560` | — | **the same id as preview** — one task for all three qualities |
+| `-generateMaskFromMesh` | `62` | 33 s cold, 6 s cached | reports no fraction at all, only `#timeout` heartbeats at `0.00` |
+| `-exportRegistration <colmap> <params>` | `20576` | 4.3 s | with `colmapExportMasks=1`, writes `masks/` beside `images/` |
+| `-exportSelectedModel <obj>` | `6`, `21861` | 0.15 s | not used by the app; measured while checking the mesh was real |
+| `-exportMapsAndMask <folder> <params>` | `36` | 0.3 s | **fails**: "Feature not implemented" |
+| `-clearCache` after a mesh | — | — | **fails**: "Cache contains current scene modifications. [err:5607]", and pops the crash reporter |
+
+Two things that cost a run each to find out.
+
+**`-exportMapsAndMask` takes both arguments or neither.** Given one, RealityScan
+reads it as the params file and answers `err:5617` on a directory. Given both,
+it writes `imageList.txt` — so the `ei*` keys recovered from the executable's
+string table (`eiExportMasks`, `eiExportDepths`, `eiExportImageList`,
+`eiExportFileNaming`, `eiExt`, `eiImageQuality`, `eiReplaceExisting`,
+`eiPlaneDistanceUnits`, `eiNear`/`eiFarPlaneDistance`,
+`eiExportCameraNormalsFormat`, `eiExportWorldNormalsFormat`,
+`eiExportDistanceScale`, `eiExportMasksOrDepths`, `eiExportPhotoconsistencies`)
+do reach it — and then fails. The route is not available on this build; §7.5
+goes through the COLMAP exporter instead.
+
+**A batch error opens the GUI even under `-headless`.** Both failures above
+drew a full-screen red banner over the desktop, and the `err:5607` one launched
+the crash reporter as well. Anything the app sends RealityScan has to succeed,
+not merely be handled.

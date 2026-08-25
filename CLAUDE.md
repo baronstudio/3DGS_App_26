@@ -126,9 +126,16 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
     ├── rc_output/              # transforms.json, pointcloud.ply,
     │   │                      #   align.rscmd + alignment_check.json (§7.1)
     │   │                      #   + rc_progress.txt, RS's own bar (§15.3)
+    │   │                      #   + masks.rscmd, mask_export_params.xml and
+    │   │                      #   masks_progress.txt — the mask run (§7.5)
+    │   │                      #   + <slug>.rsproj, the saved alignment it reopens
     │   └── <slug>_COLMAP/      # the COLMAP dataset step 4 trains on (§7.2):
-    │                          #   images/ + sparse/0/. Its own folder because
-    │                          #   the NeRF export writes the same basenames.
+    │       │                  #   images/ + sparse/0/. Its own folder because
+    │       │                  #   the NeRF export writes the same basenames.
+    │       └── masks/         # ⚙ one mask per image, same basename, written by
+    │                          #   RealityScan's own COLMAP export (§7.5). There
+    │                          #   is no rs_masks/ beside it: the masks come out
+    │                          #   of the export, not into it.
     ├── region/                 # ⚠ the Reconstruction Region (§7.4). **No reset
     │                          #   deletes it**: the box the user validated is
     │                          #   input to the mask route, not an artefact of
@@ -358,10 +365,11 @@ directory §14 says a reset never touches.
 
 **Alpha is for LichtFeld Studio, not for RealityScan.** RS has no concept of an
 alpha channel on a *source* image; its mask layers are a different mechanism and
-a different workflow, and it aligns on the full frame either way. (RS *can*
-produce alpha image sets — from the Reconstruction Region combined with mesh
-generation — and that is the route to masks in RS's own geometry. It is not
-built.)
+a different workflow, and it aligns on the full frame either way. RS *can* make
+masks of its own, from the Reconstruction Region and a mesh, and those land in
+RS's own geometry — that is §7.5, and it is built. It is the sibling of this
+route, not a replacement for it: the alpha of an imported set is the artist's
+own cut-out, and a mesh silhouette is not.
 
 So when the set is PNG with a real alpha channel, step 2 asks — inline, next to
 the estimate it changes, not in a modal answered on reflex — and keeping it
@@ -598,6 +606,78 @@ the mesh that comes next. The live "n/N points inside" is computed in the
 browser from the loaded preview, with the same test the backend uses, and is
 labelled as being over the decimated copy.
 
+### 7.5 Masks made by RealityScan (step 3, second run)
+
+The region is the input; this is the output. A mesh is calculated inside the
+box the user validated, each camera's view of that mesh becomes that camera's
+mask, and the masks reach LichtFeld Studio as `<slug>_COLMAP/masks/`. It is the
+only mask route for a project that started from a **video**, where there never
+was an alpha channel to lose (§6.7), and it is what `rc_alpha.deliver_masks`
+points at when step 2's alpha no longer fits the export.
+
+**A second RealityScan process, not a longer step 3.** `POST
+/api/pipeline/masks`, `run_mask_generation` in `pipeline_runner.py`,
+`core/steps/step_masks.py` — modelled line for line on `/analyze`, which is the
+same argument one step earlier: the expensive phase must not be redone to
+change a threshold. It reopens `rc_output/<slug>.rsproj` (so `rc.save_project`
+is a precondition, and the run says so by name when it is missing), drives
+`step_status["3"]`, and broadcasts under the step name **`masks`**, mapped to
+wizard step 3 exactly as `curate` maps to step 2.
+
+```
+-load "<rc_output>/<slug>.rsproj"
+-set "mvsPreviewDownscaleFactor=…" / "mvsNormalDownscaleFactor=…" / "MvsGeometryGpuAccel=…"
+[-setReconstructionRegion "<region>/region.rsbox"]     # only if a box was validated
+-calculatePreviewModel | -calculateNormalModel | -calculateHighModel
+-selectAllImages
+-generateMaskFromMesh
+-exportRegistration "<dataset>/colmap.txt" "<mask_export_params.xml>"
+[-save "<rc_output>/<slug>.rsproj"]
+-quit
+```
+
+**The masks come out of the COLMAP export, and that is the whole design.**
+`-exportMapsAndMask` — the verb TODO P4 was written around — answers
+**"Feature not implemented"** on RealityScan 2.2.0.119430 and fails the script.
+What works is `colmapExportMasks`, an option of the exporter step 3 already
+drives: `-generateMaskFromMesh` puts a mask *layer* on every image, and
+re-running the COLMAP export with that option writes those layers into
+`masks/` beside `images/` — **through the same undistortion block and under the
+same names**. The two questions this feature was supposed to stand or fall on,
+"will the masks be in the undistorted geometry" and "will the names meet",
+stop being questions and become properties of the export. Nothing pairs
+anything afterwards.
+
+The price is that the mask run rewrites the whole dataset, `images/` and
+`sparse/` included — 4.3 s on 251 images of ~1 Mpx. That is also the honest
+behaviour: masks exported in one pass with their images cannot drift from them.
+
+**Two things still have to be repaired, and both are measured.** The masks
+arrive at **half** the image size (973×543 image, 486×271 mask, over all 251),
+and neither `mvsPreviewDownscaleFactor=1` nor `txtImageDownscaleColor=1`
+changes it — it is the mask layer's own resolution. LichtFeld Studio does not
+resize, it refuses. And they are RGBA with an opaque alpha, like the exported
+images. `rc_alpha.fit_dataset_masks` resizes them `INTER_NEAREST` to the exact
+size of the image beside them and flattens them to greyscale, in place,
+idempotently — 1 s for 251 masks. A mask is a silhouette of a preview mesh; a
+nearest 2× is half a pixel of edge against a mesh that is metres of
+approximation.
+
+**`-clearCache` is deliberately absent.** After a mesh it answers *"Cache
+contains current scene modifications. [err:5607]"*, fails the script and pops
+RealityScan's crash reporter — which is visible even under `-headless`, because
+RS surfaces a batch error in a window whatever the flag says. The cache is the
+application's and step 3 clears it.
+
+**Step 4 did not change and did not need to.** Measured on the exported
+dataset, 300 iterations each: masks as written, loss **0.153**; the same run
+with `--invert-masks`, **0.329**; with `--mask-mode none`, **0.212**; with
+`--no-alpha-as-mask`, **0.161**. So the mask files are read (inverting them
+wrecks the run), RealityScan's white-is-kept polarity is the one LichtFeld
+Studio wants with no `--invert-masks`, and the exported images' opaque alpha
+does not override them. `step_lfs.dataset_masks` finds `masks/` and sends
+`--mask-mode` on its own.
+
 ---
 
 ## 8. API
@@ -624,6 +704,7 @@ POST   /api/pipeline/start             start a step
 POST   /api/pipeline/control           pause / resume / abort
 GET    /api/pipeline/status            running state
 POST   /api/pipeline/analyze           re-run curation alone — never re-extracts
+POST   /api/pipeline/masks             mesh inside the region and export the masks (§7.5)
 GET    /api/settings/                  config.json  (installation)
 PUT    /api/settings/                  update config.json
 GET    /api/defaults/                  defaults.json (business defaults)
@@ -636,6 +717,7 @@ GET    /api/files/{project}/analysis   scores.json + selection.json + overrides
 GET    /api/files/{project}/sources    input/ listing: probe + poster frame per video
 GET    /api/files/{project}/probe      ffprobe metadata of the *last extracted* source
 GET    /api/files/{project}/alignment  RS coverage report (alignment_check.json)
+GET    /api/files/{project}/masks      what the COLMAP dataset carries as masks (§7.5)
 GET    /api/files/{project}/preview    3D preview state (?source=rc|lfs|export&max_count=)
 POST   /api/files/{project}/preview    build that preview — returns at once, poll the GET
 GET    /api/files/{project}/cameras    camera poses of the last alignment, for the overlay
@@ -766,6 +848,7 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-25 | **The region is placed in the app, stored in the NeRF frame, and written back to `.rsbox` in RealityScan's (§7.4).** Step 3 now asks RS for a region and exports it, and the step-3 viewer draws it as an editable box. Three things had to be measured before any of it could be written, and all three contradicted the proposal it came from. **The `.rsbox` shape**: SESSION 11 §1.3 guessed a flat element list; RS 2.2 nests the centre in `<CentreEuclid>` and writes `yawPitchRoll` / `widthHeightDepth` as root *attributes* or as child *elements* depending on how long the line got — both forms came out of one run of six exports, so neither is "the" shape. **The rotation**: `yawPitchRoll` is not `(x, y, z)`. `-rotateReconstructionRegion 30 0 0` writes `0 -30 -0`, `0 30 0` writes `-30 -0 -0`, `0 0 30` writes `0 -0 -30`, so field 1 turns about **Y**, field 2 about **X**, field 3 about **Z**, all negated; the composition order was solved by brute force over the six orderings against three two-axis runs and exactly one candidate fits them all, `R = Rz(-roll)·Ry(-yaw)·Rx(-pitch)`. `region.json` therefore stores a plain `(rx, ry, rz)` triple in the frame it names — keeping RS's own triple in a file stamped `"frame": "nerf"` would have been the frame error waiting to be made. **The frame**: `-exportReconstructionRegion` writes RS's native Z-up, i.e. the frame `pointcloud.ply` was in *before* `rc_postprocess`'s `Rx+90`, while the viewer's own `Rx+180` and its "Flip up" toggle are display only and now sit on the box's parent group where they cannot reach a file. Whether the cloud is normalised at all is **read from its header marker**, not assumed. And the chain is proved on every run rather than argued: measured on a real `fauteuil3d_test` run, RS's automatic region holds **98.4 %** of the sparse cloud in the NeRF frame against 35.6 % in RS's — one number, logged, that fails loudly the day something upstream moves. **`region/` is not a step artefact**: a re-alignment resets step 3 and a box the user placed by hand is input, so it sits beside `input/` in that respect — the only other directory a reset never touches. The acceptance test was RS itself: a box written by `rc_region.write_rsbox`, handed back through `-setReconstructionRegion` and re-exported, came out matching on every field to ≤ 5e-7 (`docs/rs/`). The dead "custom .rsbox" file input went with it — a browser file input yields a name, not a path, and no field of `RCDefaults` ever carried it. |
 
 | 2026-08-25 | **`TransformControls.dispose()` is not called, because in three 0.169 it throws.** Every switch of the region gizmo's mode — and every unmount of the viewer, and every preview level change — died with `this.traverse is not a function` and took the React tree down to the step's error boundary. Upstream moved `TransformControls` from `Object3D` onto the new `Controls` base and left its `dispose()` calling `this.traverse(…)`, a method the class no longer has; the geometries it means to free hang off `getHelper()`, which *is* an `Object3D`. So the teardown calls `disconnect()` — the half that matters, since it is what removes the pointer listeners from the canvas — and walks the helper itself for the geometries and materials, which are safe to free because every one of them is built inside the `TransformControlsGizmo` constructor and shared with nothing. The gizmo is also **built once per box and re-pointed with `setMode`** rather than rebuilt per mode: switching mode is a click, and a teardown that is neither free nor safe should not be on that path. Same family as the `ui/button.tsx` forwardRef row (2026-08-21): a vendored component whose shape changed under a base class, silent until the one code path that touches it runs. |
+| 2026-08-25 | **RealityScan makes the masks, and it makes them inside its own COLMAP export (§7.5).** TODO P4's route was `-generateMaskFromMesh` + `-exportMapsAndMask <folder> <params.xml>`, then a delivery of that folder into the dataset through `rc_alpha`'s count/dimension/name checks. Measured on RealityScan 2.2.0.119430, `-exportMapsAndMask` writes `imageList.txt` — so the `ei*` keys recovered from the executable's string table were right as far as they go, `eiExportImageList` was honoured — and then answers **"Feature not implemented"** and fails the script, in a window, because RS surfaces a batch error in its GUI even under `-headless`. With one argument instead of two it reads that argument as the params file and fails differently (`err:5617`); the signature is both or neither. What does work is `colmapExportMasks`, an option of the exporter step 3 already drives: `-generateMaskFromMesh` puts a mask layer on every image, and re-running the COLMAP export with that option writes them to `<dataset>/masks/` **through the same undistortion block and under the same basenames as `images/`**. The two risks the feature was supposed to stand or fall on stop being questions — 251 masks against 251 images, name for name, `973x543` against `973x543` — so there is no `rs_masks/`, no delivery step, and no `rc_mask_params.py`: `build_mask_export_params` is `build_colmap_export_params` with two entries forced. Naming was decided by measurement rather than by the plan: `undistortNamingConvention = "$(imageName)"` is **ignored** by the COLMAP exporter, which numbers its images `00000.png` whatever it is told, so "set both exports to original naming" was not available — and did not need to be, since the masks are numbered by the same exporter in the same pass. Three things still had to be repaired or avoided. The masks arrive at **half** resolution (486x271 for a 973x543 image, all 251 of them) and neither `mvsPreviewDownscaleFactor=1` nor `txtImageDownscaleColor=1` moves it, so `rc_alpha.fit_dataset_masks` resizes `INTER_NEAREST` and flattens RGBA to greyscale in place, idempotently, in 1 s — LichtFeld Studio refuses a size mismatch rather than resizing. `-clearCache` is **not** in the script: after a mesh it answers "Cache contains current scene modifications. [err:5607]" and pops RS's crash reporter. And the mesh itself is cheap where it matters — preview quality is 2.3 s on 251 images, because a mask is a silhouette and not a surface. **Step 4 did not change**, which was the acceptance test: 300 iterations on the exported dataset gave loss 0.153 as written, 0.329 with `--invert-masks`, 0.212 with `--mask-mode none` and 0.161 with `--no-alpha-as-mask` — so the mask files are genuinely read, RS's white-is-kept polarity is LFS's, and the opaque alpha RS puts on every exported image does not override them. |
 
 Any new structural decision → add a row here in the same commit.
 
@@ -802,7 +885,7 @@ single component: options added to one list are not options the user can find.
 | Step | Directories | Files |
 |---|---|---|
 | 2 Extract | `frames/`, `masks/`, `analysis/`, `report/` | |
-| 3 RS | `rc_output/` | |
+| 3 RS | `rc_output/` — the alignment, the COLMAP dataset **and the masks in it** (§7.5), the saved `.rsproj`, both progress files | |
 | 4 LFS | `lfs_output/` | |
 | 5 Export | `export/` | |
 | 6 Blender | | `export/scene.blend`, `export/README_SPLATFORGE.txt` |
@@ -861,6 +944,7 @@ and a phase with no channel says so instead of sitting on a number.
 | 2 conform | FFmpeg `-progress pipe:1` over the image sequence — `frame=` | the image count, which is exact (§6.7) |
 | 2 curate | `step_analyze._chunked`, every 24 frames | frame count — phase 1 is now near-instant when the extraction captured the scene scores (§6.6); it is still flat when it falls back to PySceneDetect |
 | 3 RS | RealityScan `-writeProgress <file> 1`, tailed from `rc_output/rc_progress.txt` (§15.3) | the running task's fraction against the weighted plan of the `.rscmd` this run generated (`rc_progress.py`) |
+| 3 masks | the same channel, `rc_output/masks_progress.txt` (§7.5) | the same plan, over the mask script's verbs: `load`, the mesh, `generateMaskFromMesh`, the COLMAP re-export, `save` |
 | 4 LFS | the `Training […]` bar, redrawn with a bare CR | the `N/M` pair after the clock, mapped onto 5–95 % |
 
 ### 15.1 Three tools, one bug: the carriage return
@@ -917,6 +1001,23 @@ Measured on `fauteuil3d_test`, 251 frames, 106 s end to end:
 | `20533`, `20534` | `-selectMaximalComponent`, `-save` (not separable) | 0.10 / 0.59 s |
 | `20576` (0x5060) | `-exportRegistration` — it undistorts and rewrites every image | 9.79 s |
 | `20585` (0x5069) | `-exportSparsePointCloud` | 0.37 s |
+
+The mask run of §7.5 adds three more, measured on `publicsemple_truck` (251
+images of ~1 Mpx) through the saved `.rsproj`:
+
+| Task id | Verb | This run |
+|---|---|---|
+| `20532` | `-load` | 0.4 s |
+| — | `-setReconstructionRegion <file>`, `-selectAllImages` | **no task at all** |
+| `20560` | `-calculatePreviewModel` / `NormalModel` / `HighModel` — **one id for all three** | 2.3 s at preview |
+| `62` | `-generateMaskFromMesh` | 33 s cold, 6 s once the depth maps are cached |
+| `20576` | `-exportRegistration` again, this time with the masks | 4.3 s |
+| `36` | `-exportMapsAndMask` — fails, "Feature not implemented" | 0.3 s |
+
+`20560` being one id for three verbs is why `rc_progress` matches on a *kind*
+rather than on the verb: the plan tells the three qualities apart because it
+was built from the script, which is the whole point of building it from the
+script.
 
 **The id is the stable key and the ordinal is not** — the reverse of what this
 section said until 2026-08-24. The ids repeated byte for byte across four

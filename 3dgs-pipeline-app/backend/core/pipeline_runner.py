@@ -30,6 +30,7 @@ from backend.core.steps.step_blender import run_blender
 from backend.core.steps.step_export import run_export
 from backend.core.steps.step_extract import run_extract
 from backend.core.steps.step_lfs import run_lfs
+from backend.core.steps.step_masks import run_mask_generation as _run_mask_generation
 from backend.core.steps.step_rc import run_rc
 from backend.db.database import engine
 from backend.models.project import Project
@@ -46,6 +47,12 @@ def _abort_checker(project_id: str):
     """Injectable predicate so a long step can honour abort (CLAUDE.md §2.6)."""
     return lambda: bool(_abort_flags.get(project_id))
 
+
+# Step 3 has two runs and they report under two names: the alignment as `rc`,
+# the mask generation as `masks`. Both map to wizard step 3 in the frontend
+# store, the same shape as `curate` reporting into step 2 (CLAUDE.md §12,
+# 2026-08-20).
+MASK_STEP_NAME = "masks"
 
 _STEP_NAMES: dict[int, str] = {
     1: "import",
@@ -527,3 +534,79 @@ async def run_analysis_only(project_id: str, settings: dict = {}) -> None:
         _abort_flags.pop(project_id, None)
         _pause_events.pop(project_id, None)
         _demote_if_still_running(project_id, "analysis exited")
+
+
+# ── Standalone mask generation ───────────────────────────────────────────────
+
+async def run_mask_generation(project_id: str, settings: dict = {}) -> None:
+    """Generate RealityScan's own masks from the saved alignment (TODO P4).
+
+    A second RealityScan process over step 3's `.rsproj`, not a longer step 3:
+    the mesh is minutes and re-aligning to change a mask is unacceptable, which
+    is the same argument `run_analysis_only` above makes for curation
+    (CLAUDE.md §6.3). It drives `step_status["3"]` because that is the wizard
+    step it belongs to, and broadcasts under the name `masks`, which the
+    frontend store maps to step 3 exactly as it maps `curate` to step 2.
+    """
+    project = _get_project(project_id)
+    if not project:
+        await broadcast(MASK_STEP_NAME, "ERROR", f"Project {project_id} not found")
+        return
+
+    project_path = PROJECTS_DIR / project.slug
+    settings = _with_project_settings(project, settings)
+    step_status = project.get_step_status()
+
+    _abort_flags[project_id] = False
+    pause_event = asyncio.Event()
+    pause_event.set()
+    _pause_events[project_id] = pause_event
+
+    _debug(f"run_mask_generation CALLED — project='{project.name}' ({project_id})")
+
+    try:
+        step_status["3"] = "running"
+        _update_project(project_id, _step_status_dict=step_status)
+        await broadcast(
+            MASK_STEP_NAME, "INFO",
+            "▶ Generating masks from the reconstruction region…",
+            status="running",
+        )
+
+        await _run_mask_generation(project_path, broadcast, settings)
+
+        step_status["3"] = "done"
+        _update_project(project_id, _step_status_dict=step_status)
+        await broadcast(
+            MASK_STEP_NAME, "SUCCESS", "✔ Mask generation complete.", status="done"
+        )
+
+    except (ProcessAborted, asyncio.CancelledError) as exc:
+        # Same two ways in as every exe-driven step: the tree kill that raises
+        # ProcessAborted, and the hard task.cancel() the /control route fires.
+        # CancelledError derives from BaseException, so naming it is what stops
+        # the step from being stuck on "running" until a page reload.
+        _debug(f"  → run_mask_generation ABORTED for project {project_id}")
+        step_status["3"] = "aborted"
+        _update_project(project_id, _step_status_dict=step_status)
+        await _broadcast_best_effort(
+            MASK_STEP_NAME, "WARNING", "■ Mask generation aborted by user.",
+            status="aborted",
+        )
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+
+    except Exception as exc:  # noqa: BLE001 — surfaced to the user verbatim
+        exc_detail = f"[{type(exc).__name__}] {exc}" if str(exc) else type(exc).__name__
+        _debug(f"  → run_mask_generation ERROR: {exc_detail}")
+        step_status["3"] = "error"
+        _update_project(project_id, error_message=exc_detail, _step_status_dict=step_status)
+        await broadcast(
+            MASK_STEP_NAME, "ERROR", f"✖ Mask generation failed: {exc_detail}",
+            status="error",
+        )
+
+    finally:
+        _abort_flags.pop(project_id, None)
+        _pause_events.pop(project_id, None)
+        _demote_if_still_running(project_id, "mask generation exited")

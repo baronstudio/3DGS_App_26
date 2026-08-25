@@ -79,7 +79,24 @@ KIND_BY_TASK_ID: dict[int, str] = {
     # silently claim the next plan slot.
     20532: "load",
     21800: "exportReconstructionRegion",
+    # Measured on publicsemple_truck (251 images) through the mask run
+    # (step_masks.py): `-calculatePreviewModel` 2.3 s, `-generateMaskFromMesh`
+    # 33 s cold / 6 s once the depth maps are cached. `-selectAllImages` and
+    # `-setReconstructionRegionAuto` emitted nothing at all, in the same run.
+    #
+    # 20560 is the *model calculation*, not the preview specifically — the
+    # three qualities are one task in RS's eyes, so the plan tells them apart
+    # by which verb the script asked for, which is the whole point of planning
+    # from the script.
+    20560: "calculateModel",
+    62: "generateMaskFromMesh",
 }
+
+# The three mesh verbs share task id 20560, so they share one *kind* — the
+# resync matches on kind, and a plan entry is still per-verb for its weight.
+_MESH_VERBS = frozenset({
+    "calculatePreviewModel", "calculateNormalModel", "calculateHighModel",
+})
 
 # Verbs that never produce a task, so they must not consume a plan slot.
 # `-setReconstructionRegionAuto`, `-setReconstructionRegionByDensity` and
@@ -92,11 +109,15 @@ _SILENT_VERBS = frozenset({
     "setReconstructionRegionAuto",
     "setReconstructionRegionByDensity",
     "scaleReconstructionRegion",
+    # Measured in the mask run: `-load`, `-calculatePreviewModel`,
+    # `-selectAllImages`, `-generateMaskFromMesh`, `-exportRegistration`
+    # produced exactly four task ids, and none of them was this verb's.
+    "selectAllImages",
+    # Measured too, in the first real mask run of `truck_mask_test`: the file
+    # went straight from the load's `20532` to the mesh's `20560`. It sits with
+    # its three siblings after all.
+    "setReconstructionRegion",
 })
-# `-setReconstructionRegion <file>` is deliberately *not* in the set above: it
-# is prompt B's verb and was never measured. The asymmetry decides it — a verb
-# wrongly called silent shifts every later phase, while one wrongly given a
-# share costs a fraction of a percent and is corrected by the next id resync.
 
 # Relative shares of one run. Measured end to end on fauteuil3d_test (251
 # frames, 106 s): the alignment is 85 % of a script without the COLMAP export,
@@ -126,8 +147,17 @@ WEIGHTS: dict[str, float] = {
     # would take the next one — the sparse-cloud export's — and hold the bar
     # there.
     "exportReconstructionRegion": 0.5,
-    "setReconstructionRegion": 0.5,
     "load": 2.0,
+    # The mask run (step_masks.py). Measured on publicsemple_truck, 251 images
+    # of ~1 Mpx: load 0.4 s, preview mesh 2.3 s, masks 33 s, export 4.3 s. The
+    # mesh is the long pole on anything bigger — a preview mesh is depth maps
+    # over every image — so it is weighted well above what that one small
+    # project alone would suggest, and the three qualities are separated
+    # because that is the whole reason the choice is exposed.
+    "calculatePreviewModel": 25.0,
+    "calculateNormalModel": 60.0,
+    "calculateHighModel": 150.0,
+    "generateMaskFromMesh": 40.0,
 }
 _DEFAULT_WEIGHT = 2.0
 
@@ -143,7 +173,21 @@ LABELS: dict[str, str] = {
     "exportReconstructionRegion": "Exporting the reconstruction region",
     "setReconstructionRegion": "Loading the reconstruction region",
     "load": "Opening the project",
+    "calculatePreviewModel": "Meshing (preview quality)",
+    "calculateNormalModel": "Meshing (normal quality)",
+    "calculateHighModel": "Meshing (high quality)",
+    "generateMaskFromMesh": "Rendering the masks",
 }
+
+
+def _kind_of(verb: str) -> str:
+    """The task *kind* a plan entry belongs to.
+
+    Almost always the verb itself. The three `-calculate*Model` verbs are the
+    exception: RealityScan gives all three the same task id, so they have to
+    answer to one kind for the id resync while keeping their own weights.
+    """
+    return "calculateModel" if verb in _MESH_VERBS else verb
 
 
 @dataclass(frozen=True)
@@ -229,7 +273,7 @@ class RCProgressTracker:
         target: Optional[int] = None
         if kind is not None:
             for index in range(self.cursor + 1, len(self.plan)):
-                if self.plan[index].verb == kind:
+                if _kind_of(self.plan[index].verb) == kind:
                     target = index
                     break
         if target is None:
