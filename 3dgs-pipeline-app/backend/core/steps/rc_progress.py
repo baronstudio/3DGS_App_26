@@ -72,10 +72,31 @@ KIND_BY_TASK_ID: dict[int, str] = {
     65537: "align",
     20576: "exportRegistration",
     20585: "exportSparsePointCloud",
+    # Measured on the same project through the saved .rsproj (docs/rs/README.md):
+    # `-load` takes ~0.5 s and 101 lines, `-exportReconstructionRegion` two
+    # lines and 0.02 s. `-load` is not in a script this app generates yet — it
+    # is prompt B's — but a pinned id costs nothing and an unpinned one would
+    # silently claim the next plan slot.
+    20532: "load",
+    21800: "exportReconstructionRegion",
 }
 
 # Verbs that never produce a task, so they must not consume a plan slot.
-_SILENT_VERBS = frozenset({"set", "quit"})
+# `-setReconstructionRegionAuto`, `-setReconstructionRegionByDensity` and
+# `-scaleReconstructionRegion` were measured emitting no task at all: a run of
+# `-load`, `-setReconstructionRegionAuto`, `-scaleReconstructionRegion` wrote
+# nothing but the three startup ids and the load (docs/rs/README.md).
+_SILENT_VERBS = frozenset({
+    "set",
+    "quit",
+    "setReconstructionRegionAuto",
+    "setReconstructionRegionByDensity",
+    "scaleReconstructionRegion",
+})
+# `-setReconstructionRegion <file>` is deliberately *not* in the set above: it
+# is prompt B's verb and was never measured. The asymmetry decides it — a verb
+# wrongly called silent shifts every later phase, while one wrongly given a
+# share costs a fraction of a percent and is corrected by the next id resync.
 
 # Relative shares of one run. Measured end to end on fauteuil3d_test (251
 # frames, 106 s): the alignment is 85 % of a script without the COLMAP export,
@@ -100,6 +121,13 @@ WEIGHTS: dict[str, float] = {
     "save": 2.0,
     "exportRegistration": 12.0,
     "exportSparsePointCloud": 2.0,
+    # 0.02 s measured, against 90 s for the alignment. It gets a share rather
+    # than nothing because it does emit a task, and a task with no plan entry
+    # would take the next one — the sparse-cloud export's — and hold the bar
+    # there.
+    "exportReconstructionRegion": 0.5,
+    "setReconstructionRegion": 0.5,
+    "load": 2.0,
 }
 _DEFAULT_WEIGHT = 2.0
 
@@ -112,6 +140,9 @@ LABELS: dict[str, str] = {
     "save": "Saving the project",
     "exportRegistration": "Exporting the registration",
     "exportSparsePointCloud": "Exporting the sparse cloud",
+    "exportReconstructionRegion": "Exporting the reconstruction region",
+    "setReconstructionRegion": "Loading the reconstruction region",
+    "load": "Opening the project",
 }
 
 

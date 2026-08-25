@@ -30,6 +30,7 @@ import type {
   AppDefaults,
   ColmapExportDefaults,
   DefaultsSection,
+  RegionDefaults,
   UndistortDefaults,
 } from '@/types';
 
@@ -231,6 +232,12 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
   const patchColmap = (key: keyof ColmapExportDefaults, value: unknown) => {
     setDraft((d) =>
       d ? { ...d, rc: { ...d.rc, colmap: { ...d.rc.colmap, [key]: value } } } : d,
+    );
+  };
+
+  const patchRegion = (key: keyof RegionDefaults, value: unknown) => {
+    setDraft((d) =>
+      d ? { ...d, rc: { ...d.rc, region: { ...d.rc.region, [key]: value } } } : d,
     );
   };
 
@@ -650,6 +657,57 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                   <Switch
                     checked={draft.rc.save_project}
                     onCheckedChange={(v) => patch('rc', 'save_project', v)}
+                  />
+                </Row>
+
+                <SubHeading
+                  title="Reconstruction region"
+                  note="The volume RealityScan reconstructs inside, and what the masks of TODO P4 are rendered from. RealityScan exports nothing unless a region exists, and the region has to be set after -align — the density fit reads the sparse cloud. This block only *seeds* it: the box validated in the step-3 viewer is written to projects/<slug>/region/, which a re-alignment does not delete, because a box placed by hand is input and not an artefact."
+                />
+                <Row
+                  label="Fit a region"
+                  hint="Automatic puts a box around the whole component. By density hugs the densest part of the sparse cloud — the subject on a turntable, and the wrong thing on a landscape. Off skips the verbs entirely and leaves the step-3 editor with nothing to start from but a fit of the cloud."
+                >
+                  <Choice
+                    value={draft.rc.region.mode}
+                    onChange={(v) => patchRegion('mode', v)}
+                    options={[
+                      { value: 'auto', label: 'Automatic' },
+                      { value: 'density', label: 'By density' },
+                      { value: 'off', label: 'Off' },
+                    ]}
+                  />
+                </Row>
+                <Row
+                  label="Scale the fitted region"
+                  hint="Factors from the centre of whatever the fit produced, per axis. All ones sends no -scaleReconstructionRegion at all."
+                  wide
+                >
+                  <div className="flex items-center gap-2">
+                    {[0, 1, 2].map((axis) => (
+                      <NumField
+                        key={axis}
+                        value={draft.rc.region.scale[axis] ?? 1}
+                        step={0.05}
+                        min={0.05}
+                        disabled={draft.rc.region.mode === 'off'}
+                        onChange={(v) => {
+                          const scale = [...draft.rc.region.scale];
+                          scale[axis] = v > 0 ? v : 1;
+                          patchRegion('scale', scale);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </Row>
+                <Row
+                  label="Export the region"
+                  hint="Writes region/region_auto.rsbox — the seed the step-3 box editor starts from, and the file that proves the frame chain still lines up (the run logs how much of the sparse cloud it holds). Off means the app has no box to draw."
+                >
+                  <Switch
+                    checked={draft.rc.region.export}
+                    disabled={draft.rc.region.mode === 'off'}
+                    onCheckedChange={(v) => patchRegion('export', v)}
                   />
                 </Row>
 

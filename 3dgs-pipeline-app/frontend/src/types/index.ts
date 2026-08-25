@@ -99,7 +99,8 @@ export interface RCSettingsType {
   image_overlap: RCImageOverlap;
   keep_largest: boolean;
   merge_components: boolean;
-  rsbox_path?: string;
+  /** `rc.region` — the seed the step-3 box editor starts from (SESSION 12). */
+  region?: RegionDefaults;
 }
 
 // LichtFeld Studio v0.5.3 strategies. 'default' sends no --strategy flag and
@@ -203,6 +204,14 @@ export interface ColmapExportDefaults {
   undistort: UndistortDefaults;
 }
 
+/** `rc.region` — the Reconstruction Region asked of RealityScan (SESSION 12). */
+export interface RegionDefaults {
+  mode: 'off' | 'auto' | 'density';
+  /** -scaleReconstructionRegion sx sy sz center factor; all ones emits no verb. */
+  scale: number[];
+  export: boolean;
+}
+
 export interface RCDefaults {
   feature_detection_quality: 'Normal' | 'High';
   /** sfmMaxFeaturesPerMpx — the per-megapixel budget the per-image cap sits on. */
@@ -214,7 +223,44 @@ export interface RCDefaults {
   normalise_for_lfs: boolean;
   save_project: boolean;
   colmap: ColmapExportDefaults;
+  region: RegionDefaults;
   extra_align_commands: string[];
+}
+
+/** An oriented box, in the frame it says it is in — `region/region.json`.
+ *
+ *  `euler_deg` is `(rx, ry, rz)` in degrees applied as `Rz·Ry·Rx`, i.e.
+ *  `THREE.Euler(..., 'ZYX')`. It is **not** RealityScan's own `yawPitchRoll`,
+ *  which is a different triple in a different frame; that one is kept under
+ *  `rsbox` for the round-trip and is nothing the UI reads.
+ */
+export interface Region {
+  frame: 'nerf' | 'rc';
+  centre: number[];
+  size: number[];
+  euler_deg: number[];
+  source: 'rsbox_auto' | 'manual' | 'pointcloud_percentile' | string;
+  euler_order?: string;
+  coverage?: number | null;
+  points_inside?: number | null;
+  points_total?: number | null;
+  updated_at?: string;
+  rsbox?: Record<string, unknown>;
+}
+
+export interface RegionState {
+  region: Region | null;
+  /** Where `region` came from when nothing is saved yet. */
+  source: string;
+  /** True when this is a seed, not something the user validated. */
+  seeded: boolean;
+  saved: boolean;
+  rsbox: boolean;
+  auto_rsbox: boolean;
+  has_cloud: boolean;
+  /** Which frame `pointcloud.ply` — and therefore the preview — is in. */
+  cloud_frame: 'nerf' | 'rc';
+  removed?: string[];
 }
 
 /** Coverage of the last alignment — rc_output/alignment_check.json (§7). */

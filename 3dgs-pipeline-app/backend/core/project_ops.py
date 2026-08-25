@@ -25,11 +25,19 @@ PROJECT_SUBDIRS = (
     "rc_output",
     "lfs_output",
     "export",
+    # The Reconstruction Region (SESSION 12). Created for every project and
+    # absent from STEP_ARTEFACTS below on purpose: a box the user placed by hand
+    # is *input* to the mask route, not an artefact of the alignment, so a
+    # re-align must not take it. It is the only directory outside `input/` with
+    # that property, which is why it is not inside `rc_output/`.
+    "region",
 )
 
 # What each wizard step leaves on disk, as (directories, individual files).
 # Step 1 (import) owns `input/` and is deliberately absent: a reset keeps the
-# source video. Steps 5 and 6 share `export/` — 5 fills it, 6 adds the Blender
+# source video. `region/` is absent for the same class of reason - see
+# PROJECT_SUBDIRS above. Only `region_auto.rsbox` in it is derived, and step 3
+# overwrites it on every run anyway. Steps 5 and 6 share `export/` — 5 fills it, 6 adds the Blender
 # scene to it, so resetting 5 necessarily invalidates 6 as well.
 STEP_ARTEFACTS: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] = {
     2: (("frames", "masks", "analysis", "report"), ()),

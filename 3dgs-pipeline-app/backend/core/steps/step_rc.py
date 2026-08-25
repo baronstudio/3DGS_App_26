@@ -17,6 +17,8 @@ from backend.core.proc import (
 from backend.core.project_ops import reset_steps
 from backend.core.steps import colmap_dataset
 from backend.core.steps import rc_alpha
+from backend.core.steps import rc_region
+from backend.core.steps.rc_region import REGION_AUTO_FILENAME
 from backend.core.steps.rc_export_params import build_colmap_export_params
 from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
@@ -78,12 +80,52 @@ def _alignment_settings(rc: RCDefaults) -> list[str]:
     ]
 
 
+def _region_block(rc: RCDefaults, region_dir: Path) -> list[str]:
+    """The Reconstruction Region verbs, or nothing at all.
+
+    Placed after the component selection so the box describes the component
+    that actually gets exported, and before the `-save` so the saved .rsproj
+    already carries the region — which is what prompt B reloads.
+
+    The seed is written to `region/`, not to `rc_output/`: a re-alignment
+    resets step 3 (CLAUDE.md 12, 2026-08-23) and a region is input, not an
+    artefact. `region_auto.rsbox` is overwritten every run by design — it is
+    RS's answer for *this* alignment, and the box the user validated is a
+    different file beside it.
+    """
+    if rc.region.mode == "off":
+        return []
+    verb = ("-setReconstructionRegionAuto" if rc.region.mode == "auto"
+            else "-setReconstructionRegionByDensity")
+    lines = [verb]
+
+    scale = list(rc.region.scale or [])[:3]
+    scale += [1.0] * (3 - len(scale))
+    # `factor` from `center`, so the scale is relative to whatever the verb
+    # above fitted. All-ones would be a no-op verb; RS aborts a script on a
+    # verb it dislikes, so the one that says nothing is not sent.
+    if any(abs(float(v) - 1.0) > 1e-6 for v in scale):
+        lines.append(
+            "-scaleReconstructionRegion "
+            + " ".join(f"{float(v):.6g}" for v in scale)
+            + " center factor"
+        )
+
+    if rc.region.export:
+        region_dir.mkdir(parents=True, exist_ok=True)
+        lines.append(
+            f'-exportReconstructionRegion "{region_dir / REGION_AUTO_FILENAME}"'
+        )
+    return lines
+
+
 def build_rscmd(
     frames_dir: Path,
     rc_output: Path,
     colmap_dir: Path,
     rc: RCDefaults,
     project_name: str,
+    region_dir: Optional[Path] = None,
 ) -> Path:
     """Write the script RealityScan executes and return its path.
 
@@ -104,6 +146,12 @@ def build_rscmd(
         lines.append("-mergeComponents")
     if rc.keep_largest:
         lines.append("-selectMaximalComponent")
+
+    # After the component selection, before the -save: the region has to
+    # describe the component that survives, and the saved project has to carry
+    # the region.
+    lines += _region_block(rc, region_dir or (rc_output.parent / "region"))
+
     # Saved before the exports, not after: RS aborts the script on a verb it
     # does not know (that is what `-mergeComponents` above is switchable for),
     # and an alignment that took an hour must survive an export that does not
@@ -606,7 +654,10 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
             "it as a training mask. Checked after the run.",
         )
 
-    script = build_rscmd(frames_dir, rc_output, colmap_dir, rc, project_path.name)
+    script = build_rscmd(
+        frames_dir, rc_output, colmap_dir, rc, project_path.name,
+        rc_region.region_dir(project_path),
+    )
     await broadcast_fn(
         "rc", "INFO",
         "[RS] Script:\n  " + script.read_text(encoding="utf-8").strip().replace("\n", "\n  "),
@@ -689,6 +740,7 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
     colmap = await check_colmap_export(project_path, rc, broadcast_fn)
     alpha = await _audit_export_alpha(project_path, broadcast_fn)
+    region = await _audit_region(project_path, rc, broadcast_fn)
 
     aligned = coverage.get("aligned_count")
     tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
@@ -698,6 +750,7 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
         "alignment": coverage,
         "colmap": colmap,
         "alpha": alpha,
+        "region": region,
     }
 
 
@@ -743,6 +796,83 @@ async def _audit_export_alpha(project_path: Path, broadcast_fn) -> dict:
             f"[RS] {delivery['note']}",
         )
     return report
+
+
+async def _audit_region(project_path: Path, rc: RCDefaults, broadcast_fn) -> dict:
+    """Read back the region RS exported and say how much cloud it holds. Never raises.
+
+    The coverage number is not decoration: it is the one cheap check that the
+    frame chain still lines up. RS's automatic region contains most of its own
+    sparse cloud by construction, so the app frame scores ~0.9 and the wrong
+    frame scores far lower — and the day those two swap, something upstream has
+    moved. It is logged on every run for exactly that reason.
+
+    Run **after** the normalisation, because the cloud has to be in its final
+    frame before "inside" means anything.
+    """
+    if rc.region.mode == "off" or not rc.region.export:
+        return {"exported": False, "reason": "region mode off"}
+
+    directory = rc_region.region_dir(project_path)
+    path = directory / REGION_AUTO_FILENAME
+    if not path.exists():
+        # RS skips an export it dislikes without failing the script - the same
+        # err:5617 shape as the COLMAP export (CLAUDE.md 12, 2026-08-23). Warn,
+        # never fail: the editor falls back to a percentile fit of the cloud.
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] No reconstruction region was exported ({path.name} is absent). "
+            "The region editor will fall back to a fit of the sparse cloud.",
+        )
+        return {"exported": False, "reason": "no file"}
+
+    loop = asyncio.get_running_loop()
+    parsed = await loop.run_in_executor(None, rc_region.parse_rsbox, path)
+    if parsed is None:
+        await broadcast_fn(
+            "rc", "WARNING",
+            f"[RS] {path.name} could not be read as a reconstruction region.",
+        )
+        return {"exported": True, "parsed": False}
+
+    cloud = rc_region.sparse_cloud(project_path)
+    cover = await loop.run_in_executor(
+        None, rc_region.coverage_report, parsed, cloud)
+    by_frame = cover.get("by_frame") or {}
+    ratio = cover.get("ratio")
+    if ratio is None:
+        await broadcast_fn(
+            "rc", "INFO",
+            f"[RS] Region exported to region/{path.name}; "
+            f"no sparse cloud to measure it against ({cover.get('reason')}).",
+        )
+    else:
+        await broadcast_fn(
+            "rc", "INFO",
+            f"[RS] Region: {cover['inside']:,}/{cover['total']:,} sparse points "
+            f"inside ({ratio * 100:.1f} %), from {path.name}. "
+            f"Frame check (cloud is {cover.get('cloud_frame')}) "
+            + ", ".join(f"{k}={v * 100:.1f} %" for k, v in by_frame.items())
+            + ".",
+        )
+    if ratio is not None and ratio < 0.05:
+        await broadcast_fn(
+            "rc", "WARNING",
+            "[RS] That region holds almost none of the sparse cloud. Either the "
+            "alignment is not what it looks like, or the frame convention has "
+            "moved - place the box by hand before generating anything from it.",
+        )
+
+    return {
+        "exported": True,
+        "parsed": True,
+        "coverage": ratio,
+        "points_inside": cover.get("inside"),
+        "points_total": cover.get("total"),
+        "coverage_by_frame": by_frame,
+        "cloud_frame": cover.get("cloud_frame"),
+        "file": str(path),
+    }
 
 
 async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:

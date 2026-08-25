@@ -58,6 +58,15 @@
         "background_color": "#000000"
       }
     },
+    "region": {
+      "mode": "auto",
+      "scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "export": true
+    },
     "extra_align_commands": []
   },
   "lfs": {

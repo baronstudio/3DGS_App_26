@@ -129,6 +129,12 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
     │   └── <slug>_COLMAP/      # the COLMAP dataset step 4 trains on (§7.2):
     │                          #   images/ + sparse/0/. Its own folder because
     │                          #   the NeRF export writes the same basenames.
+    ├── region/                 # ⚠ the Reconstruction Region (§7.4). **No reset
+    │                          #   deletes it**: the box the user validated is
+    │                          #   input to the mask route, not an artefact of
+    │                          #   the alignment. region.json (app frame) +
+    │                          #   region.rsbox (RS's frame) + region_auto.rsbox
+    │                          #   (RS's own seed, rewritten every run).
     ├── lfs_output/
     ├── export/
     └── preview/                # ⚙ generated: browser-sized copies for the 3D
@@ -523,6 +529,77 @@ display; LFS-frame content is not. It is a display transform, nothing on disk
 moves. A "Flip up" toggle turns the whole view over for the scenes where RS's
 +Z was never the true vertical to begin with.
 
+### 7.4 The Reconstruction Region (step 3)
+
+The region is the volume RealityScan reconstructs inside. It is the **input**
+to the mask route of TODO P4 — a mesh is calculated inside it and each camera's
+view of that mesh becomes that camera's mask — which is why it does not live in
+`rc_output/`: a re-alignment resets step 3 (§12, 2026-08-23), and a box the
+user placed by hand is the one thing in this feature that costs human
+attention.
+
+```
+projects/<slug>/region/
+├── region.rsbox        the validated box, in RealityScan's own Z-up frame
+├── region.json         the same box in the app frame + provenance
+└── region_auto.rsbox   what RS exported on its own — the seed, rewritten each run
+```
+
+Step 3 asks for a region and exports it (`rc.region`, three keys: `mode` —
+`off` / `auto` / `density` — `scale`, `export`). The verbs go **after**
+`-selectMaximalComponent`, so the box describes the component that actually
+gets exported, and **before** the `-save`, so the saved `.rsproj` already
+carries it. `-setReconstructionRegion*` and `-scaleReconstructionRegion` emit
+no progress task at all; `-exportReconstructionRegion` emits one, id `21800`,
+0.02 s (`docs/rs/README.md`).
+
+**The `.rsbox` was read off RealityScan, not off a specification.** Its real
+shape, and the two things a parser has to survive, are in `docs/rs/README.md`
+with the sample files: the centre is nested in `<CentreEuclid>`, and
+`yawPitchRoll` / `widthHeightDepth` come out as root *attributes* or as child
+*elements* depending on how long RS's line got — both forms appeared in one run
+of six exports.
+
+**`yawPitchRoll` is not `(x, y, z)`.** Measured with
+`-rotateReconstructionRegion`: field 1 rotates about **Y**, field 2 about
+**X**, field 3 about **Z**, all stored negated, composing as
+`R = Rz(-roll)·Ry(-yaw)·Rx(-pitch)`. `region.json` therefore stores
+`euler_deg` as a plain `(rx, ry, rz)` triple **in the frame it names**, applied
+`ZYX` — RS's own triple is kept under `rsbox` for the round-trip and nothing
+else reads it.
+
+**The frame is the whole trap, and it is proved rather than argued.**
+`-exportReconstructionRegion` writes RS's native Z-up frame — the frame
+`pointcloud.ply` was in *before* `rc_postprocess`. The app's canonical frame is
+the NeRF one; `viewer/frame.ts`'s `Rx+180` and the "Flip up" toggle are display
+only and live on the box's parent group, so nothing they do reaches a file.
+Whether the cloud is in the NeRF frame at all depends on
+`rc.normalise_for_lfs`, so it is **read from the PLY header marker**, never
+assumed. And on every run step 3 counts the sparse points inside the exported
+region, in both candidate frames:
+
+```
+[RS] Region: 150,804/153,307 sparse points inside (98.4 %), from region_auto.rsbox.
+     Frame check (cloud is nerf) rc=35.6 %, nerf=98.4 %.
+```
+
+RS's automatic region contains most of its own cloud by construction, so one
+frame scores ~0.9 and the other does not. The day those swap, something
+upstream has moved.
+
+**The editor is step 3's and only step 3's.** `SceneViewer` gains a
+`withRegion` prop, passed from `Step3_RC.tsx` when `rc.region.mode !== "off"`,
+and it draws nothing unless the preview turned out to be a point cloud —
+`TransformControls` (already in `three@0.169`, so no §10 row), three modes,
+with `dragging-changed` disabling `OrbitControls` for the length of a drag.
+Every number the gizmo writes is also **typeable**: a gizmo alone cannot place
+a box repeatably, and a box 2 cm out in Z is invisible on screen and fatal to
+the mesh that comes next. The live "n/N points inside" is computed in the
+browser from the loaded preview, with the same test the backend uses, and is
+labelled as being over the decimated copy.
+
+---
+
 ## 8. API
 
 ```
@@ -532,6 +609,9 @@ GET    /api/projects/{id}              one project
 PATCH  /api/projects/{id}              partial update: deep-merged settings + curation overrides
 DELETE /api/projects/{id}              delete the row, the directory and the archive
 POST   /api/projects/{id}/copy         duplicate under a new name (§14)
+GET    /api/projects/{id}/region       region.json, seeded from region_auto.rsbox (§7.4)
+PUT    /api/projects/{id}/region       the validated box; writes region.json AND region.rsbox
+DELETE /api/projects/{id}/region       back to RealityScan's automatic region
 GET    /api/projects/{id}/image-sets   the imported image sets in input/ (§6.7)
 POST   /api/projects/{id}/import-folder  read a folder on this machine, server-side
 POST   /api/projects/{id}/import-zip     unpack a dropped zip of images
@@ -683,6 +763,8 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-25 | **The alpha of an imported PNG set is for LichtFeld Studio, and RealityScan is only in the way.** RS has no alpha concept for *source* images — its mask layers are a separate mechanism and a different workflow, and the way to get masks in RS's geometry is to have RS make them (Reconstruction Region + mesh generation), which is a feature of its own and is not built. So step 2 keeps the channel **twice, and never beside the frames**: the frames stay RGBA PNG so it can ride inside the images through the COLMAP export, and it is also extracted to `projects/<slug>/masks/` as one greyscale PNG per frame (one `alphaextract` pass, frame basenames, which is the layout LFS reads). Not as `<frame>.mask.png` sidecars: that *is* RS's mask-layer convention and `-addFolder` would ingest them, silently changing what the alignment runs on. The consumer's end was read off the binary rather than assumed — v0.5.3 has `--mask-mode=none|ignore|segment|segment_and_ignore|alpha_consistent`, `--invert-masks`, `--no-alpha-as-mask`, and names both channels it reads (`Using alpha channel as mask source ({}/{} cameras)`, `Mask mode enabled but no masks found in {}/masks/`). The hop in between is **measured at runtime, not predicted**: `rc_alpha.py` reads the PNG header of RS's export; if the channel survived, nothing else is needed, and if it did not, `masks/` is offered to the dataset **only when the dimensions still match**. That guard is the whole point — RS's undistortion crops every image differently (§7.2: 3793×2835 next to 3785×2831 from one uniform source), a mask of the wrong geometry deletes real surface while keeping background, and LFS refuses it outright (`Mask '{}' is {}x{} but image '{}' is {}x{}`). It is also not a formality in reverse: an alpha-carrying set is usually a render, already pinhole, where the undistortion is near-identity and the sizes do line up. A short export refuses too — position pairing means nothing once RS has dropped frames. `--mask-mode` is sent only when the dataset really carries masks, or v0.5.3 warns about a setting nobody chose. |
 | 2026-08-25 | **`core/frames.py` is the one definition of "a frame", because a mask is a `.png` in the same directory.** `api/routes/files.py`, `step_analyze.py` and `step_rc.py` each kept their own `{".jpg", ".jpeg", ".png"}`, which was harmless while a frame was any image file and stopped being harmless the moment step 2 could write `<frame>.mask.png` beside `<frame>.png`: the gallery would have shown 600 pictures for 300 frames, curation would have scored the masks as frames, and the RS coverage check would have compared 600 inputs against 300 exported cameras and reported a 50 % alignment on a perfect one. Third occurrence of a rule is where it becomes a module — the same reason `proc.iter_lines()` exists (§15.1). |
 
+| 2026-08-25 | **The region is placed in the app, stored in the NeRF frame, and written back to `.rsbox` in RealityScan's (§7.4).** Step 3 now asks RS for a region and exports it, and the step-3 viewer draws it as an editable box. Three things had to be measured before any of it could be written, and all three contradicted the proposal it came from. **The `.rsbox` shape**: SESSION 11 §1.3 guessed a flat element list; RS 2.2 nests the centre in `<CentreEuclid>` and writes `yawPitchRoll` / `widthHeightDepth` as root *attributes* or as child *elements* depending on how long the line got — both forms came out of one run of six exports, so neither is "the" shape. **The rotation**: `yawPitchRoll` is not `(x, y, z)`. `-rotateReconstructionRegion 30 0 0` writes `0 -30 -0`, `0 30 0` writes `-30 -0 -0`, `0 0 30` writes `0 -0 -30`, so field 1 turns about **Y**, field 2 about **X**, field 3 about **Z**, all negated; the composition order was solved by brute force over the six orderings against three two-axis runs and exactly one candidate fits them all, `R = Rz(-roll)·Ry(-yaw)·Rx(-pitch)`. `region.json` therefore stores a plain `(rx, ry, rz)` triple in the frame it names — keeping RS's own triple in a file stamped `"frame": "nerf"` would have been the frame error waiting to be made. **The frame**: `-exportReconstructionRegion` writes RS's native Z-up, i.e. the frame `pointcloud.ply` was in *before* `rc_postprocess`'s `Rx+90`, while the viewer's own `Rx+180` and its "Flip up" toggle are display only and now sit on the box's parent group where they cannot reach a file. Whether the cloud is normalised at all is **read from its header marker**, not assumed. And the chain is proved on every run rather than argued: measured on a real `fauteuil3d_test` run, RS's automatic region holds **98.4 %** of the sparse cloud in the NeRF frame against 35.6 % in RS's — one number, logged, that fails loudly the day something upstream moves. **`region/` is not a step artefact**: a re-alignment resets step 3 and a box the user placed by hand is input, so it sits beside `input/` in that respect — the only other directory a reset never touches. The acceptance test was RS itself: a box written by `rc_region.write_rsbox`, handed back through `-setReconstructionRegion` and re-exported, came out matching on every field to ≤ 5e-7 (`docs/rs/`). The dead "custom .rsbox" file input went with it — a browser file input yields a name, not a path, and no field of `RCDefaults` ever carried it. |
+
 Any new structural decision → add a row here in the same commit.
 
 ---
@@ -722,6 +804,13 @@ single component: options added to one list are not options the user can find.
 | 4 LFS | `lfs_output/` | |
 | 5 Export | `export/` | |
 | 6 Blender | | `export/scene.blend`, `export/README_SPLATFORGE.txt` |
+
+`region/` is deliberately absent too, and it is the only directory outside
+`input/` with that property (§7.4): the box in it is what the user validated,
+and it is an input to the mask route rather than an output of the alignment. A
+re-alignment overwrites the one derived file it holds — `region_auto.rsbox` —
+and leaves the other two alone. A project copy takes the whole directory, like
+everything else that is not `preview/`.
 
 Step 1 is deliberately absent: it owns `input/`. Steps 5 and 6 share `export/` —
 5 fills it, 6 adds the Blender scene to it — so resetting 5 necessarily takes 6

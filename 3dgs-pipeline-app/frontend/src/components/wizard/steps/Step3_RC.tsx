@@ -227,10 +227,14 @@ const Step3_RC: React.FC = () => {
           <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
             Sparse cloud
           </p>
+          {/* The region editor is offered here and nowhere else: the
+              Reconstruction Region is an input to RealityScan, so steps 4 and 5
+              have no business growing a box gizmo. */}
           <SceneViewer
             projectId={currentProjectId}
             source="rc"
             refreshKey={status}
+            withRegion={(rcSettings?.region?.mode ?? 'auto') !== 'off'}
             height={440}
           />
         </div>

@@ -23,6 +23,7 @@ from backend.core.project_ops import (
     reset_steps,
     restore_from_zip,
 )
+from backend.core.steps import rc_region
 from backend.core.steps.step_analyze import (
     load_overrides,
     rebuild_selection,
@@ -681,6 +682,154 @@ async def delete_image_set(id: str, name: str, session: Session = Depends(get_se
         raise HTTPException(status_code=404, detail="Image set not found")
     await asyncio.to_thread(shutil.rmtree, target, True)
     return {"deleted": target.name}
+
+
+# -- Reconstruction Region (SESSION 12) ---------------------------------------
+#
+# `projects/<slug>/region/` and not `rc_output/`: a re-alignment resets step 3
+# (CLAUDE.md §12, 2026-08-23) and a box the user placed by hand is input, not an
+# artefact.
+#
+# The box travels in the app's canonical frame — the NeRF one, i.e. what is on
+# disk after `rc_postprocess` — never in RealityScan's, and never with the
+# viewer's display flips applied. `rc_region` owns both conversions.
+
+class RegionBody(BaseModel):
+    """A box in the app frame. `frame` defaults to it and is checked, not trusted."""
+
+    centre: list[float]
+    size: list[float]
+    euler_deg: list[float] = [0.0, 0.0, 0.0]
+    frame: str = rc_region.FRAME_NERF
+    source: str = rc_region.SOURCE_MANUAL
+
+
+def _region_state(project_path: Path, payload: Optional[dict],
+                  source: str, seeded: bool) -> dict:
+    directory = rc_region.region_dir(project_path)
+    return {
+        "region": payload,
+        "source": source,
+        "seeded": seeded,
+        "saved": (directory / rc_region.REGION_JSON_FILENAME).exists(),
+        "rsbox": (directory / rc_region.REGION_RSBOX_FILENAME).exists(),
+        "auto_rsbox": (directory / rc_region.REGION_AUTO_FILENAME).exists(),
+        "has_cloud": rc_region.sparse_cloud(project_path).exists(),
+        # Which frame the sparse cloud on disk is in, read from its header
+        # marker. The wire format is always the app's NeRF frame; the viewer
+        # draws the box over the *preview*, which is a copy of that file, so it
+        # needs to know whether the two agree. They do not when the project was
+        # aligned with `rc.normalise_for_lfs` off.
+        "cloud_frame": rc_region.pointcloud_frame(rc_region.sparse_cloud(project_path)),
+    }
+
+
+@router.get("/{id}/region")
+async def get_region(id: str, session: Session = Depends(get_session)):
+    """The saved region, or a seed for the editor to start from.
+
+    Seeding is deliberately *not* a write: the first GET after an alignment
+    returns RS's own box without claiming the user validated anything. Only the
+    PUT creates `region.json` and `region.rsbox`.
+    """
+    project = _require_project(session, id)
+    project_path = get_project_path(project.slug)
+
+    saved = await asyncio.to_thread(rc_region.read_region_json, project_path)
+    if saved is not None:
+        region = rc_region.region_from_dict(saved)
+        if region is not None:
+            cover = await asyncio.to_thread(
+                rc_region.coverage, region, rc_region.sparse_cloud(project_path))
+            saved = {**saved, **{
+                "coverage": cover.get("ratio"),
+                "points_inside": cover.get("inside"),
+                "points_total": cover.get("total"),
+            }}
+            return _region_state(project_path, saved, saved.get("source", "manual"), False)
+
+    region, source = await asyncio.to_thread(rc_region.seed_region, project_path)
+    if region is None:
+        return _region_state(project_path, None, "none", False)
+    cover = await asyncio.to_thread(
+        rc_region.coverage, region, rc_region.sparse_cloud(project_path))
+    return _region_state(
+        project_path, rc_region.region_payload(region, cover), source, True)
+
+
+@router.put("/{id}/region")
+async def put_region(id: str, body: RegionBody, session: Session = Depends(get_session)):
+    """Write the validated box: `region.json` **and** `region.rsbox`.
+
+    Refused while a job is running for this project, like every other file
+    operation (§14) — step 3 writes `region_auto.rsbox` into the same directory.
+    """
+    project = _require_project(session, id)
+    _require_idle(project)
+    _require_live(project)
+    project_path = get_project_path(project.slug)
+
+    if len(body.centre) != 3 or len(body.size) != 3:
+        raise HTTPException(status_code=400, detail="centre and size are 3 floats each")
+    if any(v <= 0 for v in body.size):
+        raise HTTPException(status_code=400, detail="a box with a zero side is not a box")
+    if body.frame not in (rc_region.FRAME_NERF, rc_region.FRAME_RC):
+        raise HTTPException(status_code=400, detail=f"unknown frame '{body.frame}'")
+
+    # The provenance of whatever is already on disk is carried over — RS's
+    # ownerId and the header constants come from the file it exported, and a
+    # box written without them is a box RS may not recognise as its own.
+    previous = await asyncio.to_thread(rc_region.read_region_json, project_path)
+    if previous is None:
+        seed, _ = await asyncio.to_thread(rc_region.seed_region, project_path)
+        previous = rc_region.region_payload(seed) if seed is not None else {}
+
+    region = rc_region.region_from_dict({
+        **previous,
+        "centre": body.centre,
+        "size": body.size,
+        "euler_deg": body.euler_deg,
+        "frame": body.frame,
+        "source": body.source,
+    })
+    if region is None:
+        raise HTTPException(status_code=400, detail="not a region")
+
+    cover = await asyncio.to_thread(
+        rc_region.coverage, rc_region.to_nerf(region),
+        rc_region.sparse_cloud(project_path))
+    payload = await asyncio.to_thread(rc_region.save_region, project_path, region, cover)
+    return _region_state(project_path, payload, payload.get("source", "manual"), False)
+
+
+@router.delete("/{id}/region")
+async def delete_region(id: str, session: Session = Depends(get_session)):
+    """Back to RealityScan's automatic region.
+
+    Only the two files the user's box lives in go; `region_auto.rsbox` stays,
+    because it is what the editor reseeds from and it belongs to the alignment,
+    not to this decision.
+    """
+    project = _require_project(session, id)
+    _require_idle(project)
+    project_path = get_project_path(project.slug)
+    directory = rc_region.region_dir(project_path)
+
+    removed = []
+    for name in (rc_region.REGION_JSON_FILENAME, rc_region.REGION_RSBOX_FILENAME):
+        target = directory / name
+        if target.exists():
+            target.unlink()
+            removed.append(name)
+
+    region, source = await asyncio.to_thread(rc_region.seed_region, project_path)
+    payload = None
+    if region is not None:
+        cover = await asyncio.to_thread(
+            rc_region.coverage, region, rc_region.sparse_cloud(project_path))
+        payload = rc_region.region_payload(region, cover)
+    state = _region_state(project_path, payload, source, region is not None)
+    return {**state, "removed": removed}
 
 
 @router.delete("/{id}/input-files/{filename}")

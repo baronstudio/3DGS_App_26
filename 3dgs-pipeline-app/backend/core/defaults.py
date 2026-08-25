@@ -227,6 +227,32 @@ class ColmapExportDefaults(BaseModel):
     undistort: UndistortDefaults = Field(default_factory=UndistortDefaults)
 
 
+class RegionDefaults(BaseModel):
+    """The Reconstruction Region asked of RealityScan at the end of step 3.
+
+    The region is the volume RS reconstructs inside, and it is the input to the
+    mask route of TODO P4: a mesh is calculated inside it and each camera's view
+    of that mesh becomes that camera's mask. This block only *seeds* it — the
+    box the user validated lives in `projects/<slug>/region/`, outside step 3's
+    artefacts, because a box placed by hand is input and a re-alignment must not
+    take it (CLAUDE.md 14.1).
+
+    RS exports nothing unless a region exists, and the region must be set
+    **after** `-align`: ByDensity reads the sparse cloud.
+    """
+    # Which -set...Region verb runs. "auto" fits a box around the whole
+    # component; "density" hugs the densest part of the sparse cloud, which is
+    # the subject on a turntable and the wrong thing on a landscape. "off"
+    # skips the block entirely and the step exports no seed.
+    mode: Literal["off", "auto", "density"] = "auto"
+    # -scaleReconstructionRegion sx sy sz center factor. Applied to whatever
+    # the verb above fitted; 1.0 emits no verb at all.
+    scale: list[float] = Field(default_factory=lambda: [1.0, 1.0, 1.0])
+    # -exportReconstructionRegion to region/region_auto.rsbox, the seed the
+    # editor starts from. Off means the app has no box to draw.
+    export: bool = True
+
+
 class RCDefaults(BaseModel):
     # -- Alignment settings ---------------------------------------------------
     # Sent to RealityScan as `-set "<key>=<value>"` at the top of the .rscmd.
@@ -275,6 +301,10 @@ class RCDefaults(BaseModel):
     # instead of it: the coverage check, the camera overlay and the preview all
     # read the NeRF export, and LFS picks COLMAP over it on its own anyway.
     colmap: ColmapExportDefaults = Field(default_factory=ColmapExportDefaults)
+    # Reconstruction Region (SESSION 12). Placed after the component selection
+    # so the box describes the component that actually gets exported, and
+    # before the -save so the saved .rsproj already carries it.
+    region: RegionDefaults = Field(default_factory=RegionDefaults)
     # Raw .rscmd lines injected before -align, used verbatim. Escape hatch for
     # verbs this app does not model (alignment -set parameters, marker import…)
     # without having to patch step_rc.py.

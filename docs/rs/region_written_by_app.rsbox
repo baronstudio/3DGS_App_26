@@ -1,0 +1,9 @@
+<ReconstructionRegion globalCoordinateSystem="NONE" globalCoordinateSystemWkt="NONE" globalCoordinateSystemName="NONE" isGeoreferenced="0" isLatLon="0">
+  <yawPitchRoll>-30.330059235031 68.827117467123 -25.722257951554</yawPitchRoll>
+  <widthHeightDepth>18.426017475128 15.030546379089 21.246841430664</widthHeightDepth>
+  <Header magic="5395016" version="2"/>
+  <CentreEuclid>
+    <centre>7.549744129181 -0.978531360626 15.249723434448</centre>
+  </CentreEuclid>
+  <Residual R="1.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0" t="0.0 0.0 0.0" s="1.0" ownerId="{BF624784-0513-42CB-826F-3AEB93F13619}"/>
+</ReconstructionRegion>

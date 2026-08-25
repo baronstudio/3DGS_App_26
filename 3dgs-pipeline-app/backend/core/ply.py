@@ -492,3 +492,34 @@ def convert(src: Path, dst: Path, max_count: Optional[int] = None,
     if src.suffix.lower() == ".splat":
         return convert_splat_file(src, dst, max_count, progress)
     return convert_ply(src, dst, max_count, progress)
+
+
+def read_xyz(src: Path, max_count: Optional[int] = None) -> np.ndarray:
+    """The `x y z` columns of a PLY as an (n, 3) float64 array.
+
+    Both bodies the pipeline produces are covered — RS's ASCII sparse cloud and
+    a binary gaussian PLY — because the caller (`rc_region.coverage`) is handed
+    whichever file the project happens to hold.
+
+    `max_count` decimates by the same uniform spread the preview uses: a
+    coverage ratio is a statistic, and a million points answer it exactly as
+    well as five million while costing a fifth of the read.
+    """
+    header = read_header(src)
+    keep = selection(header.count, max_count)
+
+    if header.is_ascii:
+        chunks: list[np.ndarray] = []
+        _ascii_columns(src, header, ("x", "y", "z"), keep, chunks.append, None)
+        if not chunks:
+            return np.empty((0, 3), dtype=np.float64)
+        return np.concatenate(chunks, axis=0)
+
+    data = _memmap(src, header)
+    rows = data if keep is None else data[keep[keep < len(data)]]
+    return np.stack(
+        [np.asarray(rows["x"], dtype=np.float64),
+         np.asarray(rows["y"], dtype=np.float64),
+         np.asarray(rows["z"], dtype=np.float64)],
+        axis=1,
+    )

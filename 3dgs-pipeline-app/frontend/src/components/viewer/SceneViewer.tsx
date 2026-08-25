@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Boxes, Camera, Download, ExternalLink, FlipVertical2, RefreshCw, RotateCcw, Route,
   Maximize2, AlertTriangle,
@@ -8,10 +8,13 @@ import { staticUrl } from '@/api/client';
 import { useDefaults } from '@/hooks/useDefaults';
 import { useSettings } from '@/hooks/useSettings';
 import { useCameras, usePreview } from '@/hooks/usePreview';
+import { useRegion } from '@/hooks/useRegion';
 import { isYDownFrame } from './frame';
 import PointCloudCanvas from './PointCloudCanvas';
+import RegionEditor, { type RegionMode } from './RegionEditor';
+import { countInside, fitToCloud, toAppFrame, toCloudFrame } from './regionBox';
 import SplatCanvas from './SplatCanvas';
-import type { PreviewSource } from '@/types';
+import type { PreviewSource, Region } from '@/types';
 
 /**
  * The 3D preview mounted in steps 3, 4 and 5.
@@ -28,6 +31,13 @@ interface SceneViewerProps {
   refreshKey?: string | number;
   /** Offer the camera overlay. Off for steps where the poses say nothing new. */
   withCameras?: boolean;
+  /**
+   * Offer the Reconstruction Region editor. Passed only by step 3: the region
+   * is an input to RealityScan, and steps 4 and 5 have nothing to do with it.
+   * Ignored unless the preview turns out to be a point cloud — a box gizmo over
+   * a trained splat would edit a region nothing reads.
+   */
+  withRegion?: boolean;
   height?: number;
 }
 
@@ -47,7 +57,7 @@ function formatBytes(bytes: number): string {
 }
 
 export const SceneViewer: React.FC<SceneViewerProps> = ({
-  projectId, source, refreshKey, withCameras = true, height = 420,
+  projectId, source, refreshKey, withCameras = true, withRegion = false, height = 420,
 }) => {
   const { defaults } = useDefaults();
   const { settings } = useSettings();
@@ -129,6 +139,54 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
   // of that — RC's +Z is only the true vertical when the alignment found it.
   const flipContent = isYDownFrame(source) !== upFlipped;
   const flipCameras = !upFlipped;
+
+  // ── The Reconstruction Region (step 3 only) ───────────────────────────────
+  //
+  // Never over a splat: `regionEnabled` waits for the *file* to turn out to be
+  // a point cloud, for the same reason the renderer does — a step's output is
+  // not guaranteed to be the kind its number suggests.
+  const regionEnabled = withRegion && state?.ready === true && !isSplat;
+  const {
+    state: regionState, draft, edit: editRegion, save: saveRegion,
+    reset: resetRegion, dirty: regionDirty, saving: regionSaving,
+    savedAt: regionSavedAt, error: regionError,
+  } = useRegion(projectId, regionEnabled);
+
+  // The parsed preview, kept for the live inside-count and "Fit to cloud".
+  // It is the decimated copy, not the source file — which is why the panel
+  // says so and shows the ratio rather than the raw count.
+  const [positions, setPositions] = useState<Float32Array | null>(null);
+  useEffect(() => { setPositions(null); }, [state?.url]);
+
+  const [regionMode, setRegionMode] = useState<RegionMode>('translate');
+
+  const cloudFrame = regionState?.cloud_frame ?? 'nerf';
+  // What the canvas draws: the box moved onto whatever frame the preview is
+  // in. A project aligned with `rc.normalise_for_lfs` off has a cloud still in
+  // RealityScan's own frame, and a box drawn in the app's would sit 90° off.
+  const drawnRegion = useMemo(
+    () => (draft ? toCloudFrame(draft, cloudFrame) : null),
+    [draft, cloudFrame],
+  );
+
+  const inside = useMemo(
+    () => (positions && drawnRegion ? countInside(positions, drawnRegion) : null),
+    [positions, drawnRegion],
+  );
+
+  const onRegionDragged = useCallback((next: Region) => {
+    editRegion(toAppFrame(next, cloudFrame));
+  }, [editRegion, cloudFrame]);
+
+  const onFitToCloud = useCallback(() => {
+    if (!positions || !draft) return;
+    const box = fitToCloud(positions);
+    if (!box) return;
+    editRegion(toAppFrame(
+      { ...toCloudFrame(draft, cloudFrame), ...box, euler_deg: [0, 0, 0] },
+      cloudFrame,
+    ));
+  }, [positions, draft, editRegion, cloudFrame]);
 
   if (!state || (!state.available && !error)) {
     return (
@@ -284,6 +342,11 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
             flipCameras={flipCameras}
             fovX={cameras?.fov_x}
             aspect={cameras?.aspect}
+            region={regionEnabled ? drawnRegion : null}
+            regionMode={regionEnabled ? regionMode : null}
+            onRegionChange={onRegionDragged}
+            onRegionCommit={onRegionDragged}
+            onPositions={setPositions}
             onProgress={(loaded, total) =>
               setLoadPercent(total ? (loaded / total) * 100 : null)}
             onLoaded={() => setLoadPercent(null)}
@@ -342,6 +405,27 @@ export const SceneViewer: React.FC<SceneViewerProps> = ({
           </div>
         )}
       </div>
+
+      {regionEnabled && draft && (
+        <RegionEditor
+          region={draft}
+          mode={regionMode}
+          onMode={setRegionMode}
+          onChange={editRegion}
+          onFit={onFitToCloud}
+          onReset={resetRegion}
+          onSave={saveRegion}
+          inside={inside}
+          total={positions ? positions.length / 3 : null}
+          dirty={regionDirty}
+          saving={regionSaving}
+          savedAt={regionSavedAt}
+          error={regionError}
+          seeded={regionState?.seeded ?? false}
+          source={draft.source}
+          canReset={Boolean(regionState?.auto_rsbox)}
+        />
+      )}
 
       {/* Footer */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">

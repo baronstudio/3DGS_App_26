@@ -82,11 +82,19 @@ must survive a verb this build refuses — same rule as `-mergeComponents`, §12
 2026-08-24):
 
 ```
--setReconstructionRegionAuto            # or -setReconstructionRegion <slug>.rsbox
+-setReconstructionRegion "<region>/region.rsbox"   # or -setReconstructionRegionAuto
 -calculatePreviewModel
 -generateMaskFromMesh
 -exportMasks "<rc_output>/rs_masks" "<rc_output>/mask_export_params.xml"
 ```
+
+The first line is now real: `region/region.rsbox` exists, is written by the app
+and is reloaded by RealityScan (2026-08-25). Note that
+`-setReconstructionRegion <file>` was **not** measured for a progress task, so
+`rc_progress.py` gives it a small weight rather than calling it silent: a verb
+wrongly called silent shifts every later phase of the bar, while one wrongly
+given a share costs a fraction of a percent and is corrected by the next id
+resync.
 
 then deliver `rs_masks/` into `<slug>_COLMAP/masks/` through the existing
 `rc_alpha.deliver_masks` checks (count, then dimensions, then frame basenames),
@@ -102,12 +110,15 @@ so step 4 keeps sending `--mask-mode` only when the dataset really carries masks
    before building anything else — one hand-run in the GUI on `riverbed_002-v2`
    answers it. If they do come out distorted, the mask has to be produced from
    the undistorted export instead, and this whole route is worth much less.
-2. **Where the region comes from.** `-setReconstructionRegionAuto` is one line
-   and needs no UI; a region the user actually placed needs the GUI, and then
-   `-exportReconstructionRegion` to `rc_output/<slug>.rsbox` is the only way to
-   keep it across runs — a reset of step 3 would take it with the folder, so it
-   may belong in `input/` instead. See `SESSION 11 — Reconstruction Region plus
-   Crop Box plus Optimisation Splat.md`.
+2. ~~**Where the region comes from.**~~ **DONE 2026-08-25** (CLAUDE.md §7.4, and
+   the row of §12). Step 3 asks for a region (`rc.region.mode`), exports it to
+   `region/region_auto.rsbox`, and the step-3 viewer draws it as an editable
+   box written back to `region/region.rsbox` — a file RealityScan reloads, which
+   was verified by handing one back to it. No GUI trip needed, and the guess
+   about `input/` is settled: `region/` is its own directory and no reset
+   touches it. `rc_region.py` is the parser/writer, `docs/rs/` the reference
+   samples. **What is left for this item is nothing; what is left below is the
+   mesh and the masks.**
 3. **The params XML is another compiled template.** Like the COLMAP one
    (REALITYSCAN_RSCMD.md §5), the help says it "can be exported from the Export
    Mask Images dialog" — so its shape has to be captured once from the GUI

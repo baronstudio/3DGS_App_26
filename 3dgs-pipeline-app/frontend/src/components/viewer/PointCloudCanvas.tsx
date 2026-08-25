@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { buildCameraRig, type CameraRig } from './cameraRig';
 import { applyUpFix, upFixPoint } from './frame';
 import { fetchWithProgress, parsePointCloud, robustBounds } from './pointCloud';
-import type { CameraPose } from '@/types';
+import {
+  applyRegion, buildRegionBox, readRegion, type RegionBoxHandle,
+} from './regionBox';
+import type { CameraPose, Region } from '@/types';
 
 /**
  * The sparse-cloud renderer: `THREE.Points` over a `PC3D` preview, with the
@@ -27,6 +31,16 @@ interface PointCloudCanvasProps {
   flipCameras: boolean;
   fovX?: number | null;
   aspect?: number | null;
+  /** The Reconstruction Region to draw, **in the cloud's frame** (regionBox.ts). */
+  region?: Region | null;
+  /** Which gizmo is live. `null` draws the box without one. */
+  regionMode?: 'translate' | 'rotate' | 'scale' | null;
+  /** Every frame of a drag, so the numeric readout follows the gizmo. */
+  onRegionChange?: (region: Region) => void;
+  /** End of a drag — the moment worth putting in an undo stack or a save. */
+  onRegionCommit?: (region: Region) => void;
+  /** The parsed positions, for the live inside-count and "Fit to cloud". */
+  onPositions?: (positions: Float32Array) => void;
   onLoaded?: (count: number) => void;
   onProgress?: (loaded: number, total: number) => void;
   onError?: (message: string) => void;
@@ -35,6 +49,7 @@ interface PointCloudCanvasProps {
 export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
   url, pointSize, background, cameras, showCameras, showPath,
   flipCloud, flipCameras, fovX, aspect,
+  region = null, regionMode = null, onRegionChange, onRegionCommit, onPositions,
   onLoaded, onProgress, onError,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -44,6 +59,20 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const pointsRef = useRef<THREE.Points | null>(null);
   const rigRef = useRef<CameraRig | null>(null);
+  const boxRef = useRef<RegionBoxHandle | null>(null);
+  // The box the gizmo is writing into. Read back on every change, so the
+  // callbacks below need the shape (frame, source, provenance) that came in.
+  const regionRef = useRef<Region | null>(region);
+  // Set while a gizmo is being dragged: the effect that pushes `region` onto
+  // the mesh must not fight the drag it is echoing.
+  const draggingRef = useRef(false);
+  // Held in refs, not read from the closure: an inline arrow from the parent
+  // changes identity on every render, and a gizmo rebuilt mid-drag drops the
+  // drag.
+  const onChangeRef = useRef(onRegionChange);
+  const onCommitRef = useRef(onRegionCommit);
+  onChangeRef.current = onRegionChange;
+  onCommitRef.current = onRegionCommit;
   // Framing is the cloud's job, but the cloud arrives asynchronously and the
   // rig may get there first — remember what the cloud decided.
   const framedRef = useRef(false);
@@ -170,6 +199,7 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
           frame(upFixPoint(bounds.centre, flipCloud), bounds.radius);
           framedRef.current = true;
         }
+        onPositions?.(cloud.positions);
         onLoaded?.(cloud.count);
       })
       .catch((error: unknown) => {
@@ -223,7 +253,95 @@ export const PointCloudCanvas: React.FC<PointCloudCanvasProps> = ({
     if (bounds) frame(upFixPoint(bounds.centre, flipCloud), bounds.radius);
   }, [flipCloud, frame]);
 
-  // ── Point size ────────────────────────────────────────────────────────────
+
+  // ── The Reconstruction Region ─────────────────────────────────────────────
+  //
+  // The box lives in a group carrying the same display flip as the cloud, so
+  // its own local transform is the cloud frame — which is what `readRegion`
+  // hands back and what the API is given. Nothing here writes a display
+  // rotation into a number that reaches disk.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !region) return undefined;
+
+    const handle = buildRegionBox();
+    applyUpFix(handle.group, flipCloud);
+    applyRegion(handle.mesh, region);
+    scene.add(handle.group);
+    boxRef.current = handle;
+
+    return () => {
+      scene.remove(handle.group);
+      handle.dispose();
+      boxRef.current = null;
+    };
+    // Built once per mount; `region` and the flip are pushed by the effects
+    // below rather than rebuilding the mesh, which would fight a live gizmo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(region)]);
+
+  useEffect(() => {
+    regionRef.current = region;
+    const handle = boxRef.current;
+    if (!handle || !region || draggingRef.current) return;
+    applyRegion(handle.mesh, region);
+  }, [region]);
+
+  useEffect(() => {
+    if (boxRef.current) applyUpFix(boxRef.current.group, flipCloud);
+  }, [flipCloud]);
+
+  // ── The gizmo ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    const renderer = rendererRef.current;
+    const controls = controlsRef.current;
+    const handle = boxRef.current;
+    if (!scene || !camera || !renderer || !controls || !handle || !regionMode) {
+      return undefined;
+    }
+
+    const gizmo = new TransformControls(camera, renderer.domElement);
+    gizmo.setMode(regionMode);
+    gizmo.attach(handle.mesh);
+
+    // Without this every drag also orbits the camera, because OrbitControls is
+    // listening to the same pointer.
+    const onDragging = (event: { value: boolean }) => {
+      controls.enabled = !event.value;
+      draggingRef.current = event.value;
+      if (!event.value && regionRef.current) {
+        onCommitRef.current?.(readRegion(handle.mesh, regionRef.current));
+      }
+    };
+    const onChange = () => {
+      if (draggingRef.current && regionRef.current) {
+        onChangeRef.current?.(readRegion(handle.mesh, regionRef.current));
+      }
+    };
+    gizmo.addEventListener('dragging-changed', onDragging as never);
+    gizmo.addEventListener('objectChange', onChange);
+
+    // `TransformControls` extends `Controls`, not `Object3D`, in three 0.169:
+    // what goes into the scene is its helper, and adding the controls object
+    // itself would put a non-Object3D in the graph.
+    const helper = gizmo.getHelper();
+    scene.add(helper);
+
+    return () => {
+      gizmo.removeEventListener('dragging-changed', onDragging as never);
+      gizmo.removeEventListener('objectChange', onChange);
+      gizmo.detach();
+      scene.remove(helper);
+      gizmo.dispose();
+      controls.enabled = true;
+      draggingRef.current = false;
+    };
+  }, [regionMode, Boolean(region)]);
+
+  // ── Point size ─────────────────────────────────────────────────────────────
+
   useEffect(() => {
     const points = pointsRef.current;
     if (points) (points.material as THREE.PointsMaterial).size = pointSize;
