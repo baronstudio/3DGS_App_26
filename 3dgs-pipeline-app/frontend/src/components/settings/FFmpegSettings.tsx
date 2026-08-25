@@ -176,6 +176,30 @@ const FFmpegSettings: React.FC<FFmpegSettingsProps> = ({
 
       <Separator className="bg-slate-700/50" />
 
+      {/* Alpha — imported image sets only; FFmpeg writes mjpeg from a video */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5 pr-4">
+          <div className="flex items-center gap-1.5">
+            <Label>Keep the alpha channel</Label>
+            <span
+              title="PNG image sets only. Frames stay RGBA so the channel can reach LichtFeld Studio through RealityScan\u2019s COLMAP export, where it becomes a training mask. RealityScan itself ignores alpha on source images."
+              className="text-slate-500 hover:text-slate-300 cursor-help"
+            >
+              <Info className="h-3.5 w-3.5" />
+            </span>
+          </div>
+          <p className="text-xs text-slate-500">
+            Imported image sets — a video extraction has no alpha to keep
+          </p>
+        </div>
+        <Switch
+          checked={settings.keep_alpha}
+          onCheckedChange={(v) => update('keep_alpha', v)}
+        />
+      </div>
+
+      <Separator className="bg-slate-700/50" />
+
       {/* JPEG quality — compression, not resolution */}
       <div className="space-y-2">
         <div className="flex justify-between items-center">

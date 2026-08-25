@@ -24,8 +24,9 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
+from backend.core import imageset
 from backend.core.probe import probe_video
 
 VIDEO_SUFFIXES = (".mp4", ".mov")
@@ -85,6 +86,40 @@ def find_extraction_source(input_dir: Path) -> Optional[Path]:
         if matches:
             return matches[0]
     return None
+
+
+class InputSource(NamedTuple):
+    """What step 2 is going to read: one video, or one folder of images.
+
+    A project may hold both — a video in `input/` and an imported image set
+    beside it — and something has to decide. The set wins, for one reason: a
+    video arrives by upload and stays, while an image set is imported
+    deliberately and later, so it is the newer statement of intent. The panel
+    badges the winner and says in as many words that the other is not read,
+    which is the same treatment a second video already gets.
+    """
+
+    kind: str  # "video" | "images" | "none"
+    video: Optional[Path]
+    image_set: Optional[Path]
+
+
+def resolve_input_source(input_dir: Path) -> InputSource:
+    """The single definition of what step 2 consumes.
+
+    `find_extraction_source` answered this while a video was the only kind of
+    input; it stays, because it is the video half of the answer and the RS
+    coverage check and the UI both still ask that narrower question.
+    """
+    if not input_dir.is_dir():
+        return InputSource("none", None, None)
+    sets = imageset.find_image_sets(input_dir)
+    video = find_extraction_source(input_dir)
+    if sets:
+        return InputSource("images", video, sets[0])
+    if video is not None:
+        return InputSource("video", video, None)
+    return InputSource("none", None, None)
 
 
 def _kind(path: Path) -> str:
@@ -229,13 +264,17 @@ def list_sources(project_path: Path, slug: str, ffmpeg_path: str = "",
     """
     input_dir = project_path / "input"
     ffmpeg = resolve_ffmpeg(ffmpeg_path) if thumbnails else None
-    extraction_source = find_extraction_source(input_dir) if input_dir.is_dir() else None
+    resolved = resolve_input_source(input_dir)
+    extraction_source = resolved.video
 
     entries: list[dict[str, Any]] = []
     if not input_dir.is_dir():
         return {
             "sources": entries,
+            "image_sets": [],
             "extraction_source": None,
+            "source_kind": "none",
+            "source_name": None,
             "video_count": 0,
             "ffmpeg_available": bool(ffmpeg),
         }
@@ -283,9 +322,47 @@ def list_sources(project_path: Path, slug: str, ffmpeg_path: str = "",
 
         entries.append(entry)
 
+    image_sets = [
+        _describe_set_entry(set_dir, slug, cache_dir, ffmpeg, resolved)
+        for set_dir in imageset.find_image_sets(input_dir)
+    ]
+
     return {
         "sources": entries,
+        "image_sets": image_sets,
         "extraction_source": extraction_source.name if extraction_source else None,
+        "source_kind": resolved.kind,
+        "source_name": (
+            resolved.image_set.name if resolved.kind == "images"
+            else (resolved.video.name if resolved.video else None)
+        ),
         "video_count": video_count,
         "ffmpeg_available": bool(ffmpeg),
     }
+
+
+def _describe_set_entry(set_dir: Path, slug: str, cache_dir: Path,
+                        ffmpeg: Optional[str], resolved: InputSource) -> dict[str, Any]:
+    """One image set, described, with a poster frame.
+
+    The poster is built from the set's first image and cached under the same
+    fingerprint rule as a video's (§12, 2026-08-22) — a set that is re-imported
+    writes a new name rather than replacing a file the browser is reading.
+    Without it the tile would load a 40 MB PNG to draw a 320 px thumbnail.
+    """
+    entry = imageset.describe_set(set_dir, slug)
+    entry["is_extraction_source"] = (
+        resolved.image_set is not None and resolved.image_set.name == set_dir.name
+    )
+    entry["thumb_url"] = None
+
+    images = imageset.set_images(set_dir)
+    if ffmpeg and images:
+        first = images[0]
+        stem = f"set_{set_dir.name}_{_fingerprint(first)}"
+        thumb = cache_dir / f"{stem}.jpg"
+        if thumb.is_file() or _build_thumb(first, thumb, ffmpeg, None):
+            entry["thumb_url"] = f"/static/{slug}/preview/{THUMBS_DIRNAME}/{thumb.name}"
+        _prune_siblings(cache_dir, f"set_{set_dir.name}", {thumb.name})
+
+    return entry

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from backend.core import frames as frame_files
 from backend.core.curate import overlap, scenes, select, sharpness
 from backend.core.defaults import PRESETS_BY_ID, CurateDefaults, load_defaults
 
@@ -24,7 +25,9 @@ from backend.core.defaults import PRESETS_BY_ID, CurateDefaults, load_defaults
 # stays negligible next to the OpenCV work.
 CHUNK = 24
 
-FRAME_SUFFIXES = {".jpg", ".jpeg", ".png"}
+# Re-exported from core.frames, which is now the one definition — a mask
+# sidecar is a .png in the same directory and must never be scored as a frame.
+FRAME_SUFFIXES = frame_files.FRAME_SUFFIXES
 
 
 class AnalysisAborted(RuntimeError):
@@ -88,13 +91,7 @@ def analysis_dir(project_path: Path) -> Path:
 
 
 def list_frames(project_path: Path) -> list[Path]:
-    frames_dir = project_path / "frames"
-    if not frames_dir.exists():
-        return []
-    return sorted(
-        (f for f in frames_dir.iterdir() if f.suffix.lower() in FRAME_SUFFIXES),
-        key=lambda f: f.name,
-    )
+    return frame_files.list_frames(project_path / "frames")
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -211,6 +208,10 @@ async def run_analysis(
     extract_meta = read_json(adir / "extract.json") or {}
     working_fps = extract_meta.get("working_fps")
     video_path = Path(extract_meta["input_video"]) if extract_meta.get("input_video") else None
+    # Captured by the extraction on frames FFmpeg was decoding anyway. Absent on
+    # anything extracted before this existed, and on an mpdecimate run — both of
+    # which land on the PySceneDetect path below, exactly as they used to.
+    scene_scores = read_json(adir / "scene_scores.json")
     if extract_meta.get("mpdecimate"):
         # The frame index no longer maps to a timecode, so cuts detected on the
         # source video cannot be placed. Force the frames-only fallback.
@@ -229,7 +230,8 @@ async def run_analysis(
     sequence_ids, method = await loop.run_in_executor(
         None,
         lambda: scenes.detect_sequences(
-            frames, video_path, working_fps, curate.scene_detector, curate.min_scene_len
+            frames, video_path, working_fps, curate.scene_detector, curate.min_scene_len,
+            scene_scores=scene_scores, cut_source=curate.cut_source,
         ),
     )
     spans = scenes.sequence_spans(sequence_ids)

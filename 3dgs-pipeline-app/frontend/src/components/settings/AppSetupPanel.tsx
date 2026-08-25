@@ -478,6 +478,20 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                     ]}
                   />
                 </Row>
+                <Row
+                  label="Cut detection source"
+                  hint="Auto uses the scene scores FFmpeg captures during the extraction, so curation never decodes the video a second time (measured: 5 s of extra extraction against 318 s of PySceneDetect on a 52 s rush). It falls back on its own when those scores are missing. Pin to PySceneDetect to use the reference detector."
+                >
+                  <Choice
+                    value={draft.curate.cut_source}
+                    onChange={(v) => patch('curate', 'cut_source', v)}
+                    options={[
+                      { value: 'auto', label: 'Auto (from extraction)' },
+                      { value: 'video', label: 'PySceneDetect' },
+                      { value: 'frames', label: 'Extracted frames' },
+                    ]}
+                  />
+                </Row>
                 <Row label="Min scene length" hint="Frames. Shorter cuts are merged into the neighbouring sequence.">
                   <NumField
                     value={draft.curate.min_scene_len}
@@ -1032,6 +1046,26 @@ const AppSetupPanel: React.FC<AppSetupPanelProps> = ({ open, onClose }) => {
                     onCommit={(v) =>
                       updateSettings({ tools: { ...settings.tools, ffmpeg_path: v } })
                     }
+                  />
+                </Row>
+                <Row
+                  label="Hardware video decoding"
+                  hint="FFmpeg -hwaccel for the step 2 extraction. Measured on this workstation: 20 s of 4K/100fps HEVC decodes in 92.9 s on the CPU and 20.5 s on CUDA. FFmpeg falls back to software on its own when the GPU refuses a source, and step 2 says so in the log."
+                >
+                  <Choice
+                    value={settings.tools.ffmpeg_hwaccel ?? 'none'}
+                    onChange={(v) =>
+                      updateSettings({ tools: { ...settings.tools, ffmpeg_hwaccel: v } })
+                    }
+                    options={[
+                      { value: 'none', label: 'Off (CPU)' },
+                      { value: 'auto', label: 'Auto' },
+                      { value: 'cuda', label: 'CUDA / NVDEC' },
+                      { value: 'd3d11va', label: 'D3D11VA' },
+                      { value: 'dxva2', label: 'DXVA2' },
+                      { value: 'qsv', label: 'Intel QSV' },
+                      { value: 'vulkan', label: 'Vulkan' },
+                    ]}
                   />
                 </Row>
                 <Row label="Blender executable" wide>

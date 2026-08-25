@@ -5,6 +5,7 @@ import { usePipelineStore } from '@/store/pipelineStore';
 import { useProjects } from '@/hooks/useProjects';
 import apiClient from '@/api/client';
 import { ProjectList } from '@/components/projects/ProjectList';
+import { ImageSetImport } from '@/components/panels/ImageSetImport';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -20,6 +21,10 @@ function toSlug(name: string): string {
 }
 
 const ACCEPTED_EXTS = ['.mp4', '.mov', '.srt'];
+
+/** A zip of images is not a source file — it is an image set (§6.7), and it
+ *  goes through the import routes rather than through `upload-input`. */
+const ZIP_EXT = '.zip';
 
 interface InputFile {
   filename: string;
@@ -39,6 +44,7 @@ const ManageSources: React.FC = () => {
   const [uploading, setUploading] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [setCount, setSetCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchFiles = useCallback(async () => {
@@ -53,9 +59,22 @@ const ManageSources: React.FC = () => {
     }
   }, [currentProjectId]);
 
+  const fetchSetCount = useCallback(async () => {
+    if (!currentProjectId) return;
+    try {
+      const res = await apiClient.get<{ sets: unknown[] }>(
+        `/projects/${currentProjectId}/image-sets`,
+      );
+      setSetCount(res.data.sets.length);
+    } catch {
+      setSetCount(0);
+    }
+  }, [currentProjectId]);
+
   useEffect(() => {
     fetchFiles();
-  }, [fetchFiles]);
+    fetchSetCount();
+  }, [fetchFiles, fetchSetCount]);
 
   const validateFile = (file: File): boolean => {
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
@@ -126,6 +145,9 @@ const ManageSources: React.FC = () => {
   };
 
   const hasVideo = files.some((f) => /\.(mp4|mov)$/i.test(f.filename));
+  // Either kind of source lets step 2 run: a video to extract from, or a set of
+  // pre-extracted frames to conform (§6.7).
+  const hasSource = hasVideo || setCount > 0;
 
   const handleValidate = async () => {
     confirmStep(1);
@@ -148,7 +170,7 @@ const ManageSources: React.FC = () => {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
       <div>
-        <h2 className="text-xl font-semibold text-slate-100">Step 1 — Source Videos</h2>
+        <h2 className="text-xl font-semibold text-slate-100">Step 1 — Sources</h2>
         {currentProject && (
           <p className="text-xs text-slate-400 mt-1">
             <FolderOpen className="inline w-3 h-3 mr-1" />
@@ -249,17 +271,31 @@ const ManageSources: React.FC = () => {
         </p>
       )}
 
+      {currentProjectId && (
+        <ImageSetImport
+          projectId={currentProjectId}
+          projectName={currentProject?.name ?? ''}
+          onChanged={fetchSetCount}
+        />
+      )}
+
       <Button
         onClick={handleValidate}
-        disabled={!hasVideo}
+        disabled={!hasSource}
         className="bg-green-700 hover:bg-green-600 text-white gap-2"
       >
         <CheckCircle className="w-4 h-4" />
         Validate &amp; Continue to Extract Frames
       </Button>
-      {!hasVideo && (
+      {!hasSource && (
         <p className="text-xs text-slate-500 text-center -mt-4">
-          Upload at least one .mp4 or .mov video to continue
+          Add a .mp4 / .mov video, or import a set of images, to continue
+        </p>
+      )}
+      {hasVideo && setCount > 0 && (
+        <p className="text-xs text-amber-400/90 text-center -mt-4">
+          This project holds both a video and an image set. Step 2 reads the
+          image set; the video is left alone.
         </p>
       )}
 
@@ -289,9 +325,11 @@ const CreateProject: React.FC = () => {
 
   const slug = toSlug(projectName);
 
+  // A project can start from a video or from a zip of already-extracted
+  // frames; the two take different routes on the way in (see handleStart).
   const validateFile = (file: File): boolean => {
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    return ACCEPTED_EXTS.includes(ext);
+    return ACCEPTED_EXTS.includes(ext) || ext === ZIP_EXT;
   };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -327,16 +365,21 @@ const CreateProject: React.FC = () => {
     setError(null);
     try {
       const project = await createProject(projectName.trim());
-      // Upload video file if one was dropped
       if (droppedFile) {
+        const isZip = droppedFile.name.toLowerCase().endsWith(ZIP_EXT);
         const form = new FormData();
         form.append('file', droppedFile);
-        await apiClient.post(`/projects/${project.id}/upload-input`, form, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          onUploadProgress: (e) => {
-            if (e.total) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        // A zip is unpacked into an image set; a video is just a file in input/.
+        await apiClient.post(
+          `/projects/${project.id}/${isZip ? 'import-zip' : 'upload-input'}`,
+          form,
+          {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            onUploadProgress: (e) => {
+              if (e.total) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+            },
           },
-        });
+        );
       }
       setCurrentProject(project.id);
       setCurrentStep(2);
@@ -359,7 +402,7 @@ const CreateProject: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-2xl mx-auto">
-      <h2 className="text-xl font-semibold text-slate-100">Step 1 — Import Video</h2>
+      <h2 className="text-xl font-semibold text-slate-100">Step 1 — Import Source</h2>
 
       {/* Drop Zone */}
       <div
@@ -379,7 +422,7 @@ const CreateProject: React.FC = () => {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".mp4,.mov,.srt"
+          accept=".mp4,.mov,.srt,.zip"
           className="hidden"
           onChange={handleFileInput}
         />
@@ -411,10 +454,14 @@ const CreateProject: React.FC = () => {
           <>
             <UploadCloud className="w-8 h-8 text-slate-500" />
             <p className="text-sm text-slate-400">
-              Drag &amp; drop <span className="text-slate-300">.mp4</span> or{' '}
-              <span className="text-slate-300">.mov</span> here, or click to browse
+              Drag &amp; drop <span className="text-slate-300">.mp4</span> /{' '}
+              <span className="text-slate-300">.mov</span>, or a{' '}
+              <span className="text-slate-300">.zip</span> of images, or click to browse
             </p>
-            <p className="text-xs text-slate-500">Optional: also drop a .srt subtitle file</p>
+            <p className="text-xs text-slate-500">
+              A zip is unpacked into an image set — folders of stills can also be
+              imported from disk once the project exists
+            </p>
           </>
         )}
       </div>

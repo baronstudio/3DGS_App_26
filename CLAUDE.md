@@ -80,7 +80,7 @@ Three distinct things, three homes. Do not merge them.
 
 | Layer | File / store | Contents | UI |
 |---|---|---|---|
-| **Installation** | `config.json` | `.exe` paths, URLs | Setup panel → "Tools" |
+| **Installation** | `config.json` | `.exe` paths, URLs, `ffmpeg_hwaccel` (§6.1) | Setup panel → "Tools" |
 | **Defaults** | `defaults.json` | Business defaults per wizard step (fps policy, curation thresholds, RS precision, LFS iterations…) + capture presets + the 3D viewer (§7.3) | Setup panel → one section per step |
 | **Per project** | `Project.settings_json` (SQLite) | What the user changed for THIS project | Wizard step "Advanced" panels |
 
@@ -114,7 +114,13 @@ The setup panel is opened by the **gear icon in the WizardShell top bar**.
 ├── projects/_archives/         # ⚙ <slug>.zip of archived projects (§14)
 └── projects/<slug>/            # ⚠ user data — never auto-deleted
     ├── input/                  # source video(s)          (FrameGate "sources")
+    │   └── <set>/             #   …or an imported image set (§6.7): the images
+    │                          #   renamed `<set>_0001.png`, plus imageset.json
     ├── frames/                 # extracted JPEG frames    (FrameGate "cache/frames")
+    ├── masks/                  # ⚙ the alpha channel of an imported PNG set,
+    │                          #   extracted by step 2 as one greyscale PNG per
+    │                          #   frame, same basename (§6.7). Never inside
+    │                          #   frames/ — that folder goes to RealityScan.
     ├── analysis/               # curation JSON — see below
     ├── report/                 # report.json + report.md
     ├── rc_output/              # transforms.json, pointcloud.ply,
@@ -142,6 +148,10 @@ projects/<slug>/analysis/
 ├── extract.json      # what the extraction actually did: resolved working fps,
 │                     #   source video path, mpdecimate flag, jpeg quality,
 │                     #   output scale %, frame count
+├── scene_scores.json # FFmpeg `scdet` score per *source* frame, captured by the
+│                     #   extraction on frames it was decoding anyway (§6.6).
+│                     #   Scores, not cuts: the threshold is applied at analysis
+│                     #   time so it stays tunable without re-extracting.
 ├── scores.json       # per frame: index, filename, sharpness, displacement_pct, sequence_id
 ├── selection.json    # kept[] / rejected[{frame, reason}] — regenerated on each analysis
 └── overrides.json    # manual keep/drop from the UI — NEVER regenerated, always wins
@@ -170,6 +180,17 @@ phases, and the analysis phase is independently re-runnable.
   survive it are resized. 100 % adds no `scale` clause at all, so the default
   extraction is unchanged. Both sides are truncated to an even number
   (`trunc(iw*f/2)*2`) — the mjpeg encoder writes yuvj420p and refuses an odd side.
+- **Hardware decoding is an installation setting** (`config.json` →
+  `ffmpeg_hwaccel`, §4), not a per-project one: it describes the GPU in the
+  machine, and no project wants a different one. `none` sends no flag; anything
+  else becomes `-hwaccel <name>` on the input. It is deliberately *not* paired
+  with `-hwaccel_output_format`, so the frames come back to system memory and
+  the whole filter chain — `fps`, `mpdecimate`, `scale`, the scdet branch, the
+  mjpeg encoder — is untouched. Measured on 20 s of 4K/100fps HEVC: **101.3 s →
+  21.3 s** for the extraction. FFmpeg treats `-hwaccel` as a preference, so a
+  source the GPU refuses decodes in software and still exits 0 — step 2 watches
+  for that line and warns, because a silent fallback that costs 5× is not
+  something to discover from the clock.
 - **`mpdecimate` defaults to OFF.** It duplicates the overlap gate's job and, worse,
   it drops frames non-deterministically, breaking the frame-index ↔ timecode
   mapping that scene detection and the timeline depend on. The toggle stays
@@ -197,8 +218,11 @@ Runs automatically after extraction, and can be re-run alone from a
 "Re-analyse" button — thresholds are tuned iteratively and re-extracting frames
 to change one number is unacceptable.
 
-1. **Scenes** — PySceneDetect `AdaptiveDetector`. Each cut splits the footage into
-   a *sequence*; RS should import sequences as separate image groups.
+1. **Scenes** — from `analysis/scene_scores.json` when the extraction captured it
+   (§6.6), otherwise PySceneDetect `AdaptiveDetector` on the source video, and
+   the histogram fallback over the frames after that. Each cut splits the
+   footage into a *sequence*; RS should import sequences as separate image
+   groups. `curate.cut_source` pins one of the three.
 2. **Sharpness** — Tenengrad on greyscale, downscaled to ≤1080 px. Rejection is
    **relative**: below the rolling median of a 15-frame window by more than the
    sensitivity factor → `rejected:blur`. **Never ship an absolute threshold as a
@@ -243,7 +267,119 @@ One step, two panes: extraction settings + launch, then the frame gallery showin
 per-frame verdicts, the sharpness timeline (recharts, already a dependency) with
 cut markers, and per-frame manual override.
 
+### 6.6 Cut detection rides along with the extraction
+
+Curation used to decode the source video a second time: FFmpeg read every frame
+to extract, then PySceneDetect read every frame again to find the cuts. On a
+52 s 4K/100fps rush that second decode measured **318 s**, and it is what §15.4
+listed as the flat part of the curation bar.
+
+The extraction now `split`s its decoded stream: one branch is the unchanged
+`fps`/`mpdecimate`/`scale` chain, the other scales to 180 px and runs FFmpeg's
+`scdet`, whose per-frame score `metadata=print` writes out. That branch costs
+**~5 s per 20 s of 4K source** and removes the second decode entirely.
+
+Three things this settles.
+
+- **Scores are stored, not cuts.** `scdet=threshold=100` never fires; the
+  thresholding happens at analysis time, so a threshold stays tunable from a
+  re-analysis alone — which is the whole point of §6.3.
+- **Both bars again, for §12's asymmetry.** A cut must be a local outlier
+  (median + 8·MAD) *and* clear an absolute floor of 6. Measured here: two real
+  hard cuts scored **14.59** and **13.14**, while the highest score anywhere
+  across four genuinely continuous rushes was **2.51** (medians 0.009–0.066).
+  FFmpeg's own `scdet` default is 10. The frame right after a cut echoes it
+  (4.51, 2.49), which is what `min_scene_len` suppresses.
+- **The scores are checked for truncation before they are trusted.**
+  `metadata=print` is the one part of this that fails silently: FFmpeg rebuilds
+  the filter graph when the input's resolution, pixel format or SAR changes
+  mid-stream, and the rebuilt filter **reopens its file in write mode** —
+  measured on a spliced source, a 720-frame video left 240 scores whose first
+  entry sat at t=16 s. So the series is refused unless it starts at the top and
+  reaches 90 % of the probed duration, and curation falls back to PySceneDetect,
+  which decodes the video itself and cannot be fooled this way.
+
+The metadata file is named **relative**, with `analysis/` given to FFmpeg as its
+working directory: a filter option value is parsed for `:` and for the escape
+character, so an absolute Windows path would have to be escaped into the
+filtergraph, and a bare filename has neither character in it.
+
 ---
+
+### 6.7 Image sets — when the frames already exist
+
+Not every project starts from a video. A folder of stills, a zip from a phone
+or a drone, a render sequence: the frames are already extracted, and step 2 has
+nothing to pull out of anything. It **conforms** them instead — same output,
+same `frames/`, same curation after it, so nothing downstream of step 2 knows
+which branch ran.
+
+**Three doors, because they are three different costs.** A **folder path** is
+typed or pasted and read server-side: the app runs on the workstation that
+holds the files (§1), so a 20 GB set is a local copy, never an upload. A
+**zip** is one upload and one unpack — it is what a set that arrived from
+somewhere else already looks like, and it can be dropped on step 1's create
+screen to start a project. A **file selection**, including the browser's folder
+picker, is the slow lane by construction and is kept because it is the only one
+that works from another machine on the LAN.
+
+**The images are renamed on the way in**, to `input/<set>/<set>_0001.png` —
+zero-padded, contiguous, one extension. That is not tidiness: it is what makes
+the set readable by FFmpeg's `image2` demuxer as a *single* input, so step 2
+converts 900 images in one subprocess with a real `-progress` channel instead
+of 900 subprocesses with none. `input/<set>/imageset.json` keeps the mapping
+back to the original filenames, the origin (zip / folder / upload) and the
+alpha answer. A set that is not a clean sequence — a folder dropped in by hand
+with a gap in the numbering, or mixed formats — falls back to converting file
+by file, with a line in the log saying so.
+
+**Every image is a frame.** There is no cadence to resolve and no duration to
+sample, so the fps policy (§6.2) does not apply and is not shown; `max_frames`
+is the only gate, and it truncates the tail. `analysis/extract.json` records
+`working_fps: null` and `input_video: null`, which is what sends curation to
+the frames-only cut detector — the right one here, since there is no video to
+run PySceneDetect on and no timecode to map onto. `probe.json` is written
+`synthetic: true` with the nominal **30 img/s** the panel counts a duration
+with; it is a unit, not a claim about the set.
+
+**The conform copies rather than re-encodes when nothing has to change.** At
+100 % scale, with the output format already matching, the frames are
+hard-linked (falling back to a copy): re-encoding a JPEG at `-qscale:v 2` is
+generation loss for no gain, and 900 20-megapixel PNGs is 18 GB that does not
+need to exist twice. The link is safe against every operation the app performs
+— a reset deletes `frames/`, which drops one link and leaves `input/`, the
+directory §14 says a reset never touches.
+
+**Alpha is for LichtFeld Studio, not for RealityScan.** RS has no concept of an
+alpha channel on a *source* image; its mask layers are a different mechanism and
+a different workflow, and it aligns on the full frame either way. (RS *can*
+produce alpha image sets — from the Reconstruction Region combined with mesh
+generation — and that is the route to masks in RS's own geometry. It is not
+built.)
+
+So when the set is PNG with a real alpha channel, step 2 asks — inline, next to
+the estimate it changes, not in a modal answered on reflex — and keeping it
+does two things, because they fail differently:
+
+- the frames stay **RGBA PNG**, so the channel can ride *inside the images*
+  through RS's COLMAP export and come out in RS's own undistorted geometry;
+- the channel is **extracted into `projects/<slug>/masks/`**, one greyscale PNG
+  per frame with the frame's basename — one `alphaextract` pass, and the layout
+  LFS reads.
+
+Never into `frames/`: a `<frame>.mask.png` beside its frame is RS's mask-layer
+convention, and `-addFolder` would ingest it as one.
+
+Step 3 then reports which copy survived (`rc_alpha.py`). If the export kept the
+channel, nothing else happens — LFS reads it off the images ("Using alpha
+channel as mask source"). If it did not, step 3 offers `masks/` to the dataset,
+**but only after comparing the dimensions**: RS's undistortion crops every
+image differently (§7.2), and a mask of the wrong geometry is worse than none —
+it deletes real surface and keeps background, and LFS refuses it anyway (`Mask
+'{}' is {}x{} but image '{}' is {}x{}`). That check is not a formality: an
+alpha-carrying PNG set is very often a *render*, already pinhole, where the
+undistortion is close to a no-op and the sizes do line up. Step 4 sends
+`--mask-mode` only when the dataset actually carries masks.
 
 ## 7. Dashboard metrics (implement exactly)
 
@@ -396,6 +532,11 @@ GET    /api/projects/{id}              one project
 PATCH  /api/projects/{id}              partial update: deep-merged settings + curation overrides
 DELETE /api/projects/{id}              delete the row, the directory and the archive
 POST   /api/projects/{id}/copy         duplicate under a new name (§14)
+GET    /api/projects/{id}/image-sets   the imported image sets in input/ (§6.7)
+POST   /api/projects/{id}/import-folder  read a folder on this machine, server-side
+POST   /api/projects/{id}/import-zip     unpack a dropped zip of images
+POST   /api/projects/{id}/import-images  a selection of image files (browser folder picker)
+DELETE /api/projects/{id}/image-sets/{name}  remove one set from input/
 POST   /api/projects/{id}/reset        wipe steps {steps|null=all} — keeps input/
 POST   /api/projects/{id}/archive      zip the directory away, keep the row disabled
 POST   /api/projects/{id}/unarchive    unpack it back
@@ -535,6 +676,12 @@ Any new dependency → add a row here in the same commit.
 | 2026-08-24 | **The alignment settings are sent with `-set`, and until now none of them were.** `build_rscmd` wrote `-addFolder`, `-align`, the exports and nothing else, so `precision` and `max_features` — a radio and a slider present in *both* settings panels since the merge — reached RealityScan through no channel at all: every alignment ran on whatever the RS GUI had last been left on, and the two controls were decoration. RS's CLI takes application settings as `-set "key=value"`, and the keys are enumerated in the installed help (`Help/en-US/tutorials/setkeyvaluetable.htm`, "Alignment Settings") rather than guessed: `sfmFeatureDetectionQuality`, `sfmMaxFeaturesPerMpx`, `sfmMaxFeaturesPerImage`, `sfmImagesOverlap`. The four are emitted at the top of the `.rscmd`, before `-addFolder`, so `rc.extra_align_commands` can still override any of them. Three consequences. **Feature detection quality has two values in RS 2.2, not three** — `Normal` and `High`; the `Preview` the radio offered exists nowhere in RS, so `precision` becomes `feature_detection_quality` and an old project row carrying the dead key is dropped by `resolve_rc_settings` like any other unknown field. **Per-mpx is the cap that bites on a 4K frame**, the per-image number being a ceiling on top of it, which is why the panel that only exposed the second one could not explain a feature count; its app default is 30 000, this workstation's tuned GUI value, because sending RS's own 10 000 the day the key started being sent would have quietly detected a third of the features on every project. **And they are *application* settings, not project ones**: the CLI has no per-project scope for them, so a run leaves its values in the RS GUI's Alignment Settings panel — the app owns them now, which the setup panel says in as many words. Image overlap is exposed in both layers (§7.1 makes it the first thing to raise on a split), the per-mpx budget in the global one. |
 | 2026-08-24 | **Step 3 has a progress bar, fed by `-writeProgress` and weighted by the script it just wrote.** The route was decided on 2026-08-23 and the poller left unwritten; writing it turned up two errors in the note that recorded it. **The task ids are stable and the ordinals are not** — four separate processes emitted the same ids (`65536` addFolder, `65537` align, `20576` exportRegistration, `20585` exportSparsePointCloud), while `-align` moved from task 2 of 3 to task 5 of 9 once the `-set` block and the `-save` were added; three of the "tasks" being counted were RS booting (`41061`, `41063`, `41064`, present when `-quit` is the whole script), and `-set` emits none. So `rc_progress.py` plans from the `.rscmd` `build_rscmd` generated and lets each id claim the next plan entry **of its own kind**, which keeps the bar honest when RS skips a verb without failing the script — the `err:5617` COLMAP export (2026-08-23) did exactly that. And the trailing `1` is a **heartbeat period, not a write interval**: the verb writes every change with no argument at all, and the `#timeout` lines it adds are what distinguishes a plateau from a hang, which the alignment needs — it sat at `0.55` for 20 s and `0.85` for 5 s of a 90 s run. The weights stay in `rc_progress.py` rather than becoming the `rc.progress_weights` the earlier note imagined: they measure the tool, like the 5–95 % mapping of the LFS bar, and nobody wants a slider for them. **`getStatus` was checked and rejected as the channel**: `-setInstanceName` + `RealityScan.exe -getStatus <name>` does answer, in 170–470 ms, without disturbing the run, and returns the same task, fraction and clocks the file already holds — but only for the task now running, so it can count nothing, and it costs a whole `RealityScan.exe` per poll. What it does prove is that the delegate family works headless, which makes `pauseInstance`/`unpauseInstance`/`abortInstance` real and §12's "no tool here has a pause verb" (2026-08-20) false for RealityScan. Not revived: that is a feature. |
 | 2026-08-24 | **The version number is stamped by the sync, because git on the staging PC describes the wrong thing.** `/api/version/` reads `git log -1` in the app root — honest on a clone, a lie on the machine the code is *copied* to. `sync_staging.sh` delivers with `cp` over `git ls-files` and never touches `.git`, so staging reported **V2026.08.22** while running the files of the 24th: its HEAD sat on `4b500b4c` with eight commits of content on the disk beside it, and `git status` there listed 40 files as locally modified. A `fetch` + `reset --mixed` over there fixes one day and drifts again on the next push, so the sync now writes `3dgs-pipeline-app/.version_stamp.json` — commit, date, branch, `synced_at`, `synced_from` — and `version.py` prefers it. Two things keep that preference honest. The stamp carries a **`dirty` flag**: the script pushes the *working tree*, not the commit, so when any governed file differs from HEAD on the dev side it says the date is approximate and the top bar marks it `v2026.08.24*` — otherwise the stamp would replace a loud lie with a quiet one. And a stamp is **ignored once the clone moves past the commit it names** (`merge-base --is-ancestor`), so a real `git pull` on that PC takes precedence again; a commit the clone has never *seen* is not stale, which is the normal case there and was literally true on 2026-08-24 (`cat-file -e` failed on the commit the files came from). The file is gitignored: it describes one machine, never the repository. |
+| 2026-08-25 | **Hardware decoding is one FFmpeg flag, and it is worth 5× on the extraction.** Step 2 had no `-hwaccel` anywhere and nothing in the app touched the GPU, on a workstation whose whole reason for being local is that it has one (§1). Measured on 20 s of 4K/100fps 10-bit HEVC: decode alone 92.9 s → 20.5 s, the real extraction shape 95.5 s → 17.9 s. The knob lives in `config.json`, not `defaults.json`: it describes the machine's GPU, and there is no reading of §4 in which one *project* wants a different decoder. It is deliberately **not** paired with `-hwaccel_output_format cuda` — without it FFmpeg downloads each frame back to system memory and the entire filter chain keeps working, where keeping frames on the GPU would mean `scale_cuda` + `hwdownload`, would break `mpdecimate` outright, and would save a PCIe copy that is not the cost. Default `none`, because a fresh clone is not promised an NVIDIA card. The one real trap is that `-hwaccel` is a *preference*: measured on a 4080×4080 h264 source, NVDEC answered `CUDA_ERROR_INVALID_VALUE`, FFmpeg decoded in software and **exited 0 with correct frames** — so `run_extract` matches that line, warns, and records `hwaccel_fell_back` in `extract.json`. A silent 5× regression is worse than a loud failure. |
+| 2026-08-25 | **The cuts are found during the extraction, on frames FFmpeg is already decoding (§6.6).** Curation decoded the source a second time: PySceneDetect measured **318 s** on a 52 s 4K/100fps rush, which is exactly what §15.4 called the flat part of the bar. The extraction now `split`s its stream and runs `scdet` on a 180 px branch — **+5 s per 20 s of source** — and stores the per-frame *scores*, not the cuts, so the threshold stays tunable from a re-analysis alone (§6.3). End to end on the same 20 s clip, step 2 went from **220 s to 26 s** (extract 101.3 → 21.3 with CUDA, analyse 119.0 → 4.7). The detector keeps §12's 2026-08-20 doctrine — a cut must clear a relative bar *and* an absolute one — and the floor was measured, not guessed: two real hard cuts scored 14.59 and 13.14, the worst score across four continuous rushes was 2.51, so 6 sits >2× clear of both. **`metadata=print` has one silent failure and it is guarded**: FFmpeg reopens the file in write mode whenever it rebuilds the filter graph (a mid-stream resolution/SAR change), so a 720-frame spliced source left 240 scores starting at t=16 s — a series is refused unless it starts at the top and reaches 90 % of the probed duration. Three sources, `curate.cut_source`: `auto` prefers the captured scores and falls back on its own, `video` pins PySceneDetect (the reference this was measured against), `frames` pins the histogram fallback. PySceneDetect is **not** removed — it is the fallback, and on the one source where the two disagreed it was PySceneDetect that was wrong, inventing 5 cuts in a 5 s continuous turntable. |
+
+| 2026-08-25 | **A project can start from images instead of a video, and step 2 conforms them rather than extracting (§6.7).** The pipeline assumed one video per project in three places — `find_extraction_source`, `run_extract`, and step 1's upload gate — so a folder of already-extracted frames had no way in at all. It now has three, chosen by cost: a **folder path read server-side** (the app runs on the machine that holds the files, §1 — pushing 20 GB through multipart to write it back onto the same disk is a copy with extra steps), a **zip**, and a **file selection**, which is the slow lane kept for another machine on the LAN. The images are **renamed at import** to `input/<set>/<set>_0001.png`, and that is load-bearing rather than cosmetic: a zero-padded contiguous sequence is what FFmpeg's `image2` demuxer reads as one input, so 900 images convert in **one** subprocess with a real `-progress` channel instead of 900 subprocesses with none — a set that is not a clean sequence falls back to file-by-file with a line in the log. At 100 % scale and a matching format the frames are **hard-linked, not re-encoded**: `-qscale:v 2` over a JPEG is generation loss for nothing, and 900 20-megapixel PNGs is 18 GB that need not exist twice; the link survives every operation the app performs, since a reset deletes `frames/` and leaves the `input/` copy §14 protects. **No fps policy applies** — every image is a frame, `max_frames` is the only gate, and `extract.json` records `working_fps: null` / `input_video: null`, which is precisely what routes curation to the frames-only cut detector (there is no video for PySceneDetect and no timecode to map). `probe.json` is written `synthetic: true` at a nominal 30 img/s, a unit for the panel and not a claim. **An image set outranks a video in the same `input/`**, badged and warned about in both steps, because a set is imported deliberately and later — the same treatment a second video already got. |
+| 2026-08-25 | **The alpha of an imported PNG set is for LichtFeld Studio, and RealityScan is only in the way.** RS has no alpha concept for *source* images — its mask layers are a separate mechanism and a different workflow, and the way to get masks in RS's geometry is to have RS make them (Reconstruction Region + mesh generation), which is a feature of its own and is not built. So step 2 keeps the channel **twice, and never beside the frames**: the frames stay RGBA PNG so it can ride inside the images through the COLMAP export, and it is also extracted to `projects/<slug>/masks/` as one greyscale PNG per frame (one `alphaextract` pass, frame basenames, which is the layout LFS reads). Not as `<frame>.mask.png` sidecars: that *is* RS's mask-layer convention and `-addFolder` would ingest them, silently changing what the alignment runs on. The consumer's end was read off the binary rather than assumed — v0.5.3 has `--mask-mode=none|ignore|segment|segment_and_ignore|alpha_consistent`, `--invert-masks`, `--no-alpha-as-mask`, and names both channels it reads (`Using alpha channel as mask source ({}/{} cameras)`, `Mask mode enabled but no masks found in {}/masks/`). The hop in between is **measured at runtime, not predicted**: `rc_alpha.py` reads the PNG header of RS's export; if the channel survived, nothing else is needed, and if it did not, `masks/` is offered to the dataset **only when the dimensions still match**. That guard is the whole point — RS's undistortion crops every image differently (§7.2: 3793×2835 next to 3785×2831 from one uniform source), a mask of the wrong geometry deletes real surface while keeping background, and LFS refuses it outright (`Mask '{}' is {}x{} but image '{}' is {}x{}`). It is also not a formality in reverse: an alpha-carrying set is usually a render, already pinhole, where the undistortion is near-identity and the sizes do line up. A short export refuses too — position pairing means nothing once RS has dropped frames. `--mask-mode` is sent only when the dataset really carries masks, or v0.5.3 warns about a setting nobody chose. |
+| 2026-08-25 | **`core/frames.py` is the one definition of "a frame", because a mask is a `.png` in the same directory.** `api/routes/files.py`, `step_analyze.py` and `step_rc.py` each kept their own `{".jpg", ".jpeg", ".png"}`, which was harmless while a frame was any image file and stopped being harmless the moment step 2 could write `<frame>.mask.png` beside `<frame>.png`: the gallery would have shown 600 pictures for 300 frames, curation would have scored the masks as frames, and the RS coverage check would have compared 600 inputs against 300 exported cameras and reported a 50 % alignment on a perfect one. Third occurrence of a rule is where it becomes a module — the same reason `proc.iter_lines()` exists (§15.1). |
 
 Any new structural decision → add a row here in the same commit.
 
@@ -570,7 +717,7 @@ single component: options added to one list are not options the user can find.
 
 | Step | Directories | Files |
 |---|---|---|
-| 2 Extract | `frames/`, `analysis/`, `report/` | |
+| 2 Extract | `frames/`, `masks/`, `analysis/`, `report/` | |
 | 3 RS | `rc_output/` | |
 | 4 LFS | `lfs_output/` | |
 | 5 Export | `export/` | |
@@ -620,7 +767,8 @@ and a phase with no channel says so instead of sitting on a number.
 | Step | Channel | Denominator |
 |---|---|---|
 | 2 extract | FFmpeg `-progress pipe:1 -nostats` — `key=value` blocks on stdout, ~2/s | `out_time_us` against `probe.json`'s `duration_s`; `max_frames` too when capped, whichever is further along |
-| 2 curate | `step_analyze._chunked`, every 24 frames | frame count — but flat through phase 1, see §15.4 |
+| 2 conform | FFmpeg `-progress pipe:1` over the image sequence — `frame=` | the image count, which is exact (§6.7) |
+| 2 curate | `step_analyze._chunked`, every 24 frames | frame count — phase 1 is now near-instant when the extraction captured the scene scores (§6.6); it is still flat when it falls back to PySceneDetect |
 | 3 RS | RealityScan `-writeProgress <file> 1`, tailed from `rc_output/rc_progress.txt` (§15.3) | the running task's fraction against the weighted plan of the `.rscmd` this run generated (`rc_progress.py`) |
 | 4 LFS | the `Training […]` bar, redrawn with a bare CR | the `N/M` pair after the clock, mapped onto 5–95 % |
 
@@ -729,10 +877,13 @@ Pause for step 3 alone is a feature, not a wiring fix, and it is not done.
 
 ### 15.4 Where the bars are still flat
 
-- **Curation phase 1** calls `scenes.detect_sequences`, which decodes the whole
-  source video inside one `run_in_executor`. `progress_cb` exists in `scenes.py`
-  but is wired only into the `detect_from_frames` fallback, so the bar holds at
-  0.02 for the longest part of curation and then jumps to 0.25.
+- ~~**Curation phase 1** decodes the whole source video inside one
+  `run_in_executor`.~~ **Fixed 2026-08-25** (§6.6) for the normal path: the cuts
+  now come from scores the extraction captured, so phase 1 is arithmetic over a
+  list and the bar reaches 0.25 immediately. It is still flat on the two paths
+  that decode — a forced `cut_source: "video"`, or the automatic fallback when
+  the scores are missing or truncated — where `progress_cb` remains wired only
+  into `detect_from_frames`.
 - **`rc_postprocess`** rewrites a 142 MB ASCII PLY and runs the coverage check
   with no output at all.
 

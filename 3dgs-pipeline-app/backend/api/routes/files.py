@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from backend.core import cameras, preview, sources
+from backend.core import cameras, frames as frame_files, preview, sources
 from backend.core.config import app_config
 from backend.core.steps.step_analyze import read_json
 from backend.db.database import get_session
@@ -16,7 +16,7 @@ router = APIRouter()
 
 PROJECTS_DIR = Path(__file__).parents[3] / "projects"
 
-FRAME_SUFFIXES = {".jpg", ".jpeg", ".png"}
+FRAME_SUFFIXES = frame_files.FRAME_SUFFIXES
 
 
 def get_slug_from_id(project_id: str, session: Session) -> str:
@@ -138,10 +138,7 @@ async def list_frames(project_id: str, session: Session = Depends(get_session)):
     if not frames_dir.exists():
         return empty
 
-    files = sorted(
-        (f for f in frames_dir.iterdir() if f.suffix.lower() in FRAME_SUFFIXES),
-        key=lambda f: f.name,
-    )
+    files = frame_files.list_frames(frames_dir)
     if not files:
         return empty
 

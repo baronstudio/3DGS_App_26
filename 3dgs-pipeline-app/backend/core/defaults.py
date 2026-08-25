@@ -111,12 +111,29 @@ class ExtractDefaults(BaseModel):
     # filter at all, so the default extraction is bit-for-bit what it was.
     scale_percent: int = Field(default=100, ge=10, le=100)
     max_frames: int = 0
+    # Imported image sets only (§6.7). When the set is PNG with a real alpha
+    # channel, step 2 writes RGBA frames *and* extracts the channel into
+    # `masks/` as one image per frame. Both copies exist for LichtFeld Studio,
+    # which reads either; RealityScan has no alpha concept for source images
+    # and is only the thing in between. A set with no alpha ignores this, and a
+    # video can never produce one — FFmpeg writes mjpeg.
+    #
+    # Default on: a set that went to the trouble of carrying transparency
+    # carries it for a reason, and the step says what it did either way.
+    keep_alpha: bool = True
 
 
 class CurateDefaults(BaseModel):
     enabled: bool = True
     auto_after_extract: bool = True
     scene_detector: Literal["adaptive", "content", "off"] = "adaptive"
+    # Where the cuts come from. "auto" prefers the scdet scores the extraction
+    # captured on frames it was decoding anyway, which is what removes
+    # PySceneDetect's second decode of the source (§15.4) — it falls back to
+    # PySceneDetect on its own whenever those scores are missing or truncated.
+    # "video" pins PySceneDetect, which is the reference "auto" was measured
+    # against; "frames" pins the histogram fallback over the extracted frames.
+    cut_source: Literal["auto", "video", "frames"] = "auto"
     min_scene_len: int = 15
     sharpness_window: int = 15
     # 0-100. The fraction of the local sharpness median a frame must reach:
@@ -283,6 +300,14 @@ class LFSDefaults(BaseModel):
     eval: bool = False
     save_eval_images: bool = False
     background_color: str = "#000000"
+    # `--mask-mode`, v0.5.3. Only sent when step 2 actually produced masks
+    # (§6.7); "none" is the build's default and sends no flag at all, the same
+    # convention as `strategy`. The modes are the build's own — `ignore` keeps
+    # masked pixels out of the loss, which is the one that matches what an
+    # alpha channel from a cut-out sequence means.
+    mask_mode: Literal[
+        "none", "ignore", "segment", "segment_and_ignore", "alpha_consistent"
+    ] = "ignore"
 
 
 class ExportDefaults(BaseModel):

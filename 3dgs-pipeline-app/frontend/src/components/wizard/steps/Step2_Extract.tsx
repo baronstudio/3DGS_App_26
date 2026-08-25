@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, CheckCircle, RefreshCw, Sliders } from 'lucide-react';
+import { Settings, CheckCircle, Layers, RefreshCw, Sliders } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePipelineStore } from '@/store/pipelineStore';
 import { usePipeline } from '@/hooks/usePipeline';
@@ -57,6 +57,84 @@ const CurationSummary: React.FC<{ summary: SelectionSummary; inBandRatio?: numbe
   </div>
 );
 
+
+/**
+ * The one question an image set asks that a video never does.
+ *
+ * Not a modal: a modal at the click of "Conform" is answered on reflex, and the
+ * answer has to be visible next to the estimate it changes. Not a checkbox
+ * buried in the Extraction panel either — it decides the frame format and
+ * whether LichtFeld Studio trains on the background at all, which is more than
+ * a checkbox's worth of consequence.
+ *
+ * What it does *not* decide is anything about RealityScan: RS has no alpha
+ * concept for source images and aligns on the full frame either way. The
+ * channel is cargo — carried inside the images to the COLMAP export, and
+ * extracted to `masks/` as a second copy in case RS drops it.
+ */
+const AlphaChoice: React.FC<{
+  set: NonNullable<ReturnType<typeof useSources>['primarySet']>;
+  keepAlpha: boolean;
+  onChange: (keep: boolean) => void;
+  disabled?: boolean;
+}> = ({ set, keepAlpha, onChange, disabled }) => {
+  const unused = set.alpha_in_use === false;
+  return (
+    <div className="rounded-lg border border-emerald-800/60 bg-emerald-950/10 px-4 py-3">
+      <p className="text-sm font-medium text-emerald-300">
+        These PNGs carry an alpha channel
+        {unused && (
+          <span className="font-normal text-slate-400">
+            {' '}— though the sampled images are fully opaque, so it may be the
+            renderer's default rather than a cut-out
+          </span>
+        )}
+        .
+      </p>
+      <div className="mt-2 flex flex-col gap-2">
+        {[
+          {
+            keep: true,
+            title: 'Keep it — LichtFeld Studio can train through it',
+            body: 'Frames stay RGBA PNG, and the channel is also extracted to '
+              + 'masks/ as one image per frame. RealityScan aligns on the full '
+              + 'image either way; step 4 trains with --mask-mode from whichever '
+              + 'copy reaches the COLMAP dataset, and step 3 says which did.',
+          },
+          {
+            keep: false,
+            title: 'Drop it',
+            body: 'Frames are written as JPEG, like a video extraction. Lighter, '
+              + 'and the background is trained along with everything else.',
+          },
+        ].map((option) => (
+          <label
+            key={String(option.keep)}
+            className={`flex cursor-pointer gap-2.5 rounded-md border px-3 py-2 transition-colors ${
+              keepAlpha === option.keep
+                ? 'border-emerald-600 bg-emerald-900/20'
+                : 'border-slate-700 bg-slate-800/40 hover:border-slate-600'
+            } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <input
+              type="radio"
+              name="keep-alpha"
+              className="mt-1 accent-emerald-500"
+              checked={keepAlpha === option.keep}
+              disabled={disabled}
+              onChange={() => onChange(option.keep)}
+            />
+            <span className="min-w-0">
+              <span className="block text-sm text-slate-100">{option.title}</span>
+              <span className="block text-xs text-slate-400">{option.body}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const Step2_Extract: React.FC = () => {
   const { currentProjectId, stepStatuses, setCurrentStep } = usePipelineStore();
   const { startPipeline } = usePipeline();
@@ -67,9 +145,14 @@ const Step2_Extract: React.FC = () => {
     reanalyse, setOverride, refresh, clear, error: curationError,
   } = useCuration(currentProjectId);
   const {
-    sources, primary: primarySource, ffmpegAvailable,
+    sources, imageSets, primary: primarySource, primarySet, sourceKind,
+    ffmpegAvailable,
     loading: sourcesLoading, error: sourcesError, refresh: refreshSources,
   } = useSources(currentProjectId);
+  // An imported image set outranks a video in the same `input/` — the backend
+  // decides that (`resolve_input_source`) and the step only reports it, so the
+  // wording on screen cannot disagree with what step 2 actually reads.
+  const usingImages = sourceKind === 'images';
 
   const [showSettings, setShowSettings] = useState(false);
   const [showCurate, setShowCurate] = useState(false);
@@ -112,13 +195,20 @@ const Step2_Extract: React.FC = () => {
   // Resolve the policy against this project's real source when we know it.
   useEffect(() => {
     if (!extract) return;
+    if (usingImages) {
+      // Every image is a frame: there is no cadence to resolve, and the
+      // resolver would answer about a video step 2 is not going to open.
+      setFpsExplanation('');
+      setWorkingFps(null);
+      return;
+    }
     const t = setTimeout(() => {
       previewFps(extract, sourceProbe?.fps ?? null, sourceProbe?.duration_s ?? null)
         .then((r) => { setFpsExplanation(r.explanation); setWorkingFps(r.fps); })
         .catch(() => { setFpsExplanation(''); setWorkingFps(null); });
     }, 250);
     return () => clearTimeout(t);
-  }, [extract, sourceProbe, previewFps]);
+  }, [extract, sourceProbe, previewFps, usingImages]);
 
   /** Everything the backend needs to resolve both phases of step 2. */
   const jobSettings = () => ({ extract: extract ?? {}, curate: curate ?? {} });
@@ -184,21 +274,56 @@ const Step2_Extract: React.FC = () => {
       {/* What is in input/, and what step 2 will do with it */}
       <SourcePanel
         sources={sources}
+        imageSets={imageSets}
+        sourceKind={sourceKind}
+        keepAlpha={extract?.keep_alpha}
         loading={sourcesLoading}
         error={sourcesError}
         ffmpegAvailable={ffmpegAvailable}
         workingFps={workingFps}
         maxFrames={extract?.max_frames}
         scalePercent={extract?.scale_percent}
+        quality={extract?.quality}
         onRefresh={refreshSources}
       />
+
+      {usingImages && primarySet?.has_alpha && extract && (
+        <AlphaChoice
+          set={primarySet}
+          keepAlpha={extract.keep_alpha}
+          disabled={isRunning}
+          onChange={(keep) => setExtract({ ...extract, keep_alpha: keep })}
+        />
+      )}
 
       {/* Settings summary */}
       <div className="flex items-center justify-between rounded-lg bg-slate-800 border border-slate-700 px-4 py-3 flex-wrap gap-2">
         <div className="flex gap-4 text-sm text-slate-300 flex-wrap">
-          <span>FPS: <span className="text-slate-100 font-medium">{fpsSummary}</span></span>
+          {usingImages ? (
+            <>
+              <span className="flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-violet-400" />
+                Source:{' '}
+                <span className="text-slate-100 font-medium">
+                  image set · {primarySet?.image_count ?? 0} images
+                </span>
+              </span>
+              <span>
+                Alpha:{' '}
+                <span className={primarySet?.has_alpha && extract?.keep_alpha
+                  ? 'text-emerald-400 font-medium' : 'text-slate-500 font-medium'}>
+                  {!primarySet?.has_alpha ? 'none' : extract?.keep_alpha ? 'kept in frames' : 'dropped'}
+                </span>
+              </span>
+            </>
+          ) : (
+            <>
+              <span>FPS: <span className="text-slate-100 font-medium">{fpsSummary}</span></span>
+              <span>Dedup: <span className="text-slate-100 font-medium">{extract?.mpdecimate ? 'on' : 'off'}</span></span>
+            </>
+          )}
           <span>Quality: <span className="text-slate-100 font-medium">{extract?.quality ?? '—'}</span></span>
-          <span>Dedup: <span className="text-slate-100 font-medium">{extract?.mpdecimate ? 'on' : 'off'}</span></span>
+          <span>Scale: <span className="text-slate-100 font-medium">{extract?.scale_percent ?? 100}%</span></span>
           <span>
             Curation:{' '}
             <span className={curate?.enabled ? 'text-cyan-400 font-medium' : 'text-slate-500 font-medium'}>
@@ -234,7 +359,7 @@ const Step2_Extract: React.FC = () => {
         </div>
       </div>
 
-      {fpsExplanation && !showSettings && (
+      {fpsExplanation && !showSettings && !usingImages && (
         <p className="text-xs text-cyan-400 font-mono -mt-3">{fpsExplanation}</p>
       )}
 
@@ -269,7 +394,11 @@ const Step2_Extract: React.FC = () => {
           disabled={isRunning || !currentProjectId || !extract}
           className="bg-cyan-600 hover:bg-cyan-500 text-white"
         >
-          {isRunning ? 'Working…' : hasFrames ? 'Re-extract Frames' : 'Extract Frames'}
+          {isRunning
+            ? 'Working…'
+            : usingImages
+              ? hasFrames ? 'Re-conform Images' : 'Conform Images'
+              : hasFrames ? 'Re-extract Frames' : 'Extract Frames'}
         </Button>
         {/* Re-analysing never re-extracts: thresholds are tuned iteratively (§6.3). */}
         <Button
@@ -286,7 +415,10 @@ const Step2_Extract: React.FC = () => {
 
       {(isRunning || isDone) && (
         <div className="flex flex-col gap-2">
-          <ProgressBar step="extract" label="1. Frame extraction" />
+          <ProgressBar
+            step="extract"
+            label={usingImages ? '1. Conforming images' : '1. Frame extraction'}
+          />
           {curate?.enabled && <ProgressBar step="curate" label="2. Curation" />}
         </div>
       )}

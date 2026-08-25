@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.core.config import app_config
+from backend.core import frames as frame_files
 from backend.core.defaults import RCDefaults, deep_merge, load_defaults
 from backend.core.proc import (
     ProcessAborted,
@@ -15,6 +16,7 @@ from backend.core.proc import (
 )
 from backend.core.project_ops import reset_steps
 from backend.core.steps import colmap_dataset
+from backend.core.steps import rc_alpha
 from backend.core.steps.rc_export_params import build_colmap_export_params
 from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
@@ -22,7 +24,7 @@ from backend.core.steps.rc_postprocess import (
 )
 from backend.core.steps.rc_progress import RCProgressTracker, plan_from_script
 
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+_IMAGE_SUFFIXES = frame_files.FRAME_SUFFIXES
 
 
 # -- Settings resolution -----------------------------------------------------
@@ -94,13 +96,7 @@ def build_rscmd(
     reconstruction. Every sequence goes through the same `-align`, and what we
     want out of it is a single component (CLAUDE.md 7).
     """
-    # First verb of every run: RS keeps a resource cache across sessions and
-    # it is the application's, not the project's - a stale entry from an
-    # earlier alignment of the same frames is exactly what a re-run is trying
-    # to get away from. It takes no argument, and the help's "save the project
-    # before clearing" does not apply here: nothing is open yet at line 1.
-    lines = ["-clearCache"]
-    lines += _alignment_settings(rc)
+    lines = _alignment_settings(rc)
     lines.append(f'-addFolder "{frames_dir}"')
     lines += [line.strip() for line in rc.extra_align_commands if line.strip()]
     lines.append("-align")
@@ -140,6 +136,13 @@ def build_rscmd(
             f'-exportRegistration "{colmap_dir / "colmap.txt"}" "{params}"'
         )
 
+    # Last verb before `-quit`: RS keeps a resource cache across sessions and
+    # it is the application's, not the project's, so it is cleared once the run
+    # has no further use for it - after the exports, and after the `-save`
+    # above, which is what the help's "save the project before clearing" asks
+    # for. It takes no argument.
+    lines.append("-clearCache")
+
     lines.append("-quit")
     script = rc_output / "align.rscmd"
     script.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -151,10 +154,10 @@ def build_rscmd(
 def _input_frame_names(frames_dir: Path) -> list[str]:
     if not frames_dir.is_dir():
         return []
-    return sorted(
-        f.name for f in frames_dir.iterdir()
-        if f.suffix.lower() in _IMAGE_SUFFIXES
-    )
+    # frame_files, not a local glob: an alpha mask is a `.png` sitting beside
+    # its frame (§6.7), and counting the sidecars here would compare 600 inputs
+    # against 300 exported cameras and report a 50 % alignment.
+    return [f.name for f in frame_files.list_frames(frames_dir)]
 
 
 def _basename(raw: str) -> str:
@@ -594,6 +597,15 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     rc = resolve_rc_settings(settings)
     colmap_dir = colmap_dataset.colmap_dataset_dir(project_path)
+    if rc_alpha.frames_carry_alpha(frames_dir):
+        await broadcast_fn(
+            "rc", "INFO",
+            "[RS] The frames carry an alpha channel. RealityScan aligns on the "
+            "full image - it has no alpha concept for source files - so the "
+            "channel matters only in the export, where LichtFeld Studio reads "
+            "it as a training mask. Checked after the run.",
+        )
+
     script = build_rscmd(frames_dir, rc_output, colmap_dir, rc, project_path.name)
     await broadcast_fn(
         "rc", "INFO",
@@ -676,11 +688,61 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
     await broadcast_fn("rc", "INFO", "[RS] Alignment complete - checking coverage.")
     coverage = await check_alignment_coverage(project_path, rc_output, broadcast_fn)
     colmap = await check_colmap_export(project_path, rc, broadcast_fn)
+    alpha = await _audit_export_alpha(project_path, broadcast_fn)
 
     aligned = coverage.get("aligned_count")
     tail = f" ({aligned}/{coverage.get('input_count')} cameras)" if aligned else ""
     await broadcast_fn("rc", "SUCCESS", f"[RS] Step complete{tail}.", progress=1.0)
-    return {"rc_output": str(rc_output), "alignment": coverage, "colmap": colmap}
+    return {
+        "rc_output": str(rc_output),
+        "alignment": coverage,
+        "colmap": colmap,
+        "alpha": alpha,
+    }
+
+
+async def _audit_export_alpha(project_path: Path, broadcast_fn) -> dict:
+    """Say whether the frames' alpha reached the dataset. Never raises.
+
+    Nothing is repaired here and nothing can be: RS undistorts and crops every
+    image differently, so the source-resolution masks match no exported image
+    (rc_alpha.py). The value of the check is that a silently opaque export is
+    otherwise invisible until step 4 trains on the background and the splat
+    comes out wrong for no stated reason.
+    """
+    try:
+        dataset, _ = colmap_dataset.find_dataset(project_path)
+        report = await asyncio.to_thread(rc_alpha.audit, project_path, dataset)
+    except Exception as exc:  # noqa: BLE001 - never worth the alignment
+        await broadcast_fn("rc", "WARNING", f"[RS] Alpha check skipped: {exc}")
+        return {"error": str(exc)}
+
+    if report["state"] == "no_alpha":
+        return report
+
+    level = "WARNING" if report["state"] == "dropped" else "INFO"
+    await broadcast_fn("rc", level, f"[RS] {report['note']}")
+
+    if report["state"] != "dropped":
+        return report
+
+    # The channel did not survive, so try the copy step 2 extracted. Whether
+    # that is usable is a question about geometry, not about intent - see
+    # rc_alpha.deliver_masks.
+    try:
+        delivery = await asyncio.to_thread(rc_alpha.deliver_masks, project_path, dataset)
+    except Exception as exc:  # noqa: BLE001
+        await broadcast_fn("rc", "WARNING", f"[RS] Mask delivery skipped: {exc}")
+        return report
+
+    report["masks"] = delivery
+    if delivery.get("note"):
+        await broadcast_fn(
+            "rc",
+            "INFO" if delivery["state"] == "delivered" else "WARNING",
+            f"[RS] {delivery['note']}",
+        )
+    return report
 
 
 async def _normalise_export_for_lfs(rc_output: Path, broadcast_fn) -> dict:

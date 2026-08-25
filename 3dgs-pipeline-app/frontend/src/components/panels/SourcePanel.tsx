@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import {
-  AlertTriangle, Film, FileText, Loader2, PlayCircle, RefreshCw,
+  AlertTriangle, Film, FileText, Images, Layers, Loader2, PlayCircle, RefreshCw,
 } from 'lucide-react';
 import { staticUrl } from '@/api/client';
-import type { SourceFile } from '@/types';
+import type { ImageSet, InputSourceKind, SourceFile } from '@/types';
 import { VideoPlayerDialog } from './VideoPlayerDialog';
 import {
   formatBitrate, formatBytes, formatCount, formatDuration, resolutionClass,
@@ -12,6 +12,12 @@ import {
 
 interface SourcePanelProps {
   sources: SourceFile[];
+  /** Imported sets of pre-extracted frames (§6.7). */
+  imageSets?: ImageSet[];
+  /** Which of the two step 2 will actually read. */
+  sourceKind?: InputSourceKind;
+  /** `extract.keep_alpha` — what the conform will do with a PNG alpha channel. */
+  keepAlpha?: boolean;
   loading?: boolean;
   error?: string | null;
   ffmpegAvailable?: boolean;
@@ -21,6 +27,8 @@ interface SourcePanelProps {
   maxFrames?: number;
   /** `extract.scale_percent` — 100 means the frames keep the source size. */
   scalePercent?: number;
+  /** JPEG quality (`-qscale:v`), shown only when the conform will re-encode. */
+  quality?: number;
   onRefresh?: () => void;
 }
 
@@ -74,6 +82,172 @@ const ExtractionEstimate: React.FC<{
       {scaled && <span className="text-slate-400"> · written at {scaled}</span>}
       <span className="text-slate-500"> — this is what curation will score.</span>
     </p>
+  );
+};
+
+
+/** An imported set of frames, and what step 2 will do to it.
+ *
+ * The questions here are not the video ones. There is no cadence to choose and
+ * no duration to sample: every image is a frame, so what matters is how many
+ * there are, whether they agree with each other (one resolution, one format),
+ * how heavy each one is, and whether they carry an alpha channel — which is the
+ * only decision this panel actually asks for.
+ */
+const ImageSetRow: React.FC<{
+  set: ImageSet;
+  isPrimary: boolean;
+  keepAlpha?: boolean;
+  maxFrames?: number;
+  scalePercent?: number;
+  quality?: number;
+}> = ({ set, isPrimary, keepAlpha = true, maxFrames = 0, scalePercent = 100, quality }) => {
+  const [posterBroken, setPosterBroken] = useState(false);
+  const formats = Object.entries(set.formats);
+  const mixedFormat = formats.length > 1;
+  const alpha = set.has_alpha && keepAlpha;
+  const capped = maxFrames > 0 && maxFrames < set.image_count;
+  const kept = capped ? maxFrames : set.image_count;
+  // The conform copies rather than re-encodes when nothing has to change — same
+  // rule as `plan_output` in step_conform, stated where the settings are set.
+  const outSuffix = alpha ? '.png' : '.jpg';
+  const passthrough =
+    scalePercent === 100 && !mixedFormat && formats[0]?.[0] === outSuffix;
+  const even = (n: number) => Math.trunc((n * scalePercent) / 100 / 2) * 2;
+
+  return (
+    <li
+      className={`flex gap-4 rounded-lg border px-3 py-3 ${
+        isPrimary ? 'border-violet-800/70 bg-violet-950/10' : 'border-slate-700 bg-slate-800/40'
+      }`}
+    >
+      <div className="relative w-40 shrink-0 overflow-hidden rounded border border-slate-700
+                      bg-slate-900 aspect-video">
+        {set.thumb_url && !posterBroken ? (
+          <img
+            src={staticUrl(set.thumb_url)}
+            alt={set.name}
+            onError={() => setPosterBroken(true)}
+            className="h-full w-full object-cover"
+            loading="lazy"
+          />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center">
+            <Images className="w-6 h-6 text-slate-600" />
+          </span>
+        )}
+        <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1 text-[10px]
+                         tabular-nums text-slate-200">
+          {formatCount(set.image_count)} img
+        </span>
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-slate-100 truncate">{set.name}</span>
+          {isPrimary && (
+            <Badge
+              tone="bg-violet-900/60 text-violet-300"
+              title="Step 2 conforms this set into frames/ — there is nothing to extract."
+            >
+              image set
+            </Badge>
+          )}
+          {!isPrimary && (
+            <Badge tone="bg-slate-700 text-slate-300" title="Step 2 reads one source per project.">
+              unused by step 2
+            </Badge>
+          )}
+          {set.origin === 'zip' && (
+            <Badge tone="bg-slate-700 text-slate-300" title={set.origin_name}>
+              from zip
+            </Badge>
+          )}
+          {set.has_alpha && (
+            <Badge
+              tone={set.alpha_in_use === false
+                ? 'bg-slate-700 text-slate-400'
+                : 'bg-emerald-900/60 text-emerald-300'}
+              title={
+                set.alpha_in_use === false
+                  ? 'The images declare an alpha channel but the sampled ones are fully opaque.'
+                  : 'PNG alpha channel — carried into the frames, and on to LichtFeld Studio as a training mask.'
+              }
+            >
+              {set.alpha_in_use === false ? 'alpha (unused)' : 'alpha'}
+            </Badge>
+          )}
+          {!set.uniform_size && (
+            <Badge
+              tone="bg-amber-900/60 text-amber-300"
+              title="The sampled images do not share one resolution."
+            >
+              mixed sizes
+            </Badge>
+          )}
+        </div>
+
+        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+          <Field label="images" value={formatCount(set.image_count)} />
+          <Field
+            label="resolution"
+            value={set.width && set.height ? `${set.width}×${set.height}` : '—'}
+          />
+          <Field
+            label="format"
+            value={formats.map(([ext, n]) => `${ext.slice(1)}${mixedFormat ? ` ×${n}` : ''}`).join(' + ') || '—'}
+            tone={mixedFormat ? 'text-amber-300' : 'text-slate-200'}
+          />
+          <Field label="total size" value={formatBytes(set.total_bytes)} />
+          <Field label="avg / image" value={formatBytes(set.avg_bytes)} />
+          <Field
+            label={`at ${set.nominal_fps} img/s`}
+            value={formatDuration(set.duration_s)}
+          />
+          <Field label="naming" value={`${set.pattern}${formats[0]?.[0] ?? ''}`} />
+          <Field label="original naming" value={set.original_pattern || '—'} />
+          <Field
+            label="imported from"
+            value={set.origin === 'folder' ? (set.origin_path || 'folder')
+              : set.origin === 'zip' ? (set.origin_name || 'zip')
+              : 'uploaded files'}
+          />
+        </div>
+
+        {isPrimary && (
+          <p className="text-xs text-violet-300/90 mt-2">
+            ≈ <span className="font-semibold tabular-nums">{formatCount(kept)}</span>{' '}
+            frames written as <span className="font-mono">{outSuffix}</span>
+            {capped && (
+              <span className="text-amber-400"> (capped from {formatCount(set.image_count)})</span>
+            )}
+            {scalePercent < 100 && set.width && set.height && (
+              <span className="text-slate-400">
+                {' '}· resized to {even(set.width)}×{even(set.height)}
+              </span>
+            )}
+            {passthrough ? (
+              <span className="text-slate-500">
+                {' '}— nothing to re-encode, the frames are linked as they are.
+              </span>
+            ) : (
+              <span className="text-slate-500">
+                {' '}— re-encoded{!alpha && quality ? ` at -qscale:v ${quality}` : ''}.
+              </span>
+            )}
+            {alpha && (
+              <span className="text-emerald-400/90">
+                {' '}Alpha kept in the frames, and extracted to{' '}
+                <span className="font-mono">masks/</span> as one image per frame.
+              </span>
+            )}
+            {set.has_alpha && !keepAlpha && (
+              <span className="text-slate-500"> Alpha dropped.</span>
+            )}
+          </p>
+        )}
+      </div>
+    </li>
   );
 };
 
@@ -220,27 +394,40 @@ const VideoRow: React.FC<{
  */
 export const SourcePanel: React.FC<SourcePanelProps> = ({
   sources,
+  imageSets = [],
+  sourceKind = 'video',
+  keepAlpha,
   loading = false,
   error = null,
   ffmpegAvailable = true,
   workingFps,
   maxFrames,
   scalePercent,
+  quality,
   onRefresh,
 }) => {
   const [playing, setPlaying] = useState<SourceFile | null>(null);
 
   const videos = sources.filter((s) => s.kind === 'video');
   const others = sources.filter((s) => s.kind !== 'video');
+  const usingSets = sourceKind === 'images';
+  const primarySetName =
+    imageSets.find((s) => s.is_extraction_source)?.name ?? imageSets[0]?.name;
 
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-3">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-slate-400">
           Input sources
-          {videos.length > 0 && (
+          {(videos.length > 0 || imageSets.length > 0) && (
             <span className="ml-2 text-slate-500 normal-case tracking-normal">
-              {videos.length} video{videos.length > 1 ? 's' : ''}
+              {imageSets.length > 0 && (
+                <>
+                  {imageSets.length} image set{imageSets.length > 1 ? 's' : ''}
+                  {videos.length > 0 && ' · '}
+                </>
+              )}
+              {videos.length > 0 && `${videos.length} video${videos.length > 1 ? 's' : ''}`}
               {others.length > 0 && ` · ${others.length} other file${others.length > 1 ? 's' : ''}`}
             </span>
           )}
@@ -264,12 +451,37 @@ export const SourcePanel: React.FC<SourcePanelProps> = ({
         <p className="mb-2 text-xs text-red-400">{error}</p>
       )}
 
-      {videos.length === 0 && !loading ? (
-        <p className="text-sm text-slate-500">
-          No .mp4 or .mov in this project's <span className="font-mono">input/</span> — step 1
-          is where they are uploaded.
+      {imageSets.length > 0 && (
+        <ul className="mb-2 flex flex-col gap-2">
+          {imageSets.map((set) => (
+            <ImageSetRow
+              key={set.name}
+              set={set}
+              isPrimary={usingSets && set.name === primarySetName}
+              keepAlpha={keepAlpha}
+              maxFrames={maxFrames}
+              scalePercent={scalePercent}
+              quality={quality}
+            />
+          ))}
+        </ul>
+      )}
+
+      {usingSets && videos.length > 0 && (
+        <p className="mb-2 flex items-start gap-1.5 text-xs text-amber-400">
+          <Layers className="w-3.5 h-3.5 shrink-0 mt-px" />
+          This project holds an image set <em>and</em> a video. Step 2 reads the
+          image set; the video below is not touched. Delete the set from step 1
+          to go back to extracting from the video.
         </p>
-      ) : (
+      )}
+
+      {videos.length === 0 && imageSets.length === 0 && !loading ? (
+        <p className="text-sm text-slate-500">
+          Nothing in this project's <span className="font-mono">input/</span> — step 1 is
+          where a video is uploaded or a set of images is imported.
+        </p>
+      ) : videos.length === 0 ? null : (
         <ul className="flex flex-col gap-2">
           {videos.map((s) => (
             <VideoRow
@@ -285,7 +497,7 @@ export const SourcePanel: React.FC<SourcePanelProps> = ({
         </ul>
       )}
 
-      {videos.length > 1 && (
+      {videos.length > 1 && !usingSets && (
         <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-400">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
           Step 2 extracts from one video per project. The others sit in{' '}

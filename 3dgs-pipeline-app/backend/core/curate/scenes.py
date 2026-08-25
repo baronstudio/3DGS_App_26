@@ -5,24 +5,56 @@ Sequences matter downstream: the sharpness median must not straddle a cut, the
 overlap gate resets at every cut, and RealityScan should import each sequence as
 its own image group (CLAUDE.md §7).
 
-Two paths, in order of preference:
+Three paths, in order of preference:
 
-  1. PySceneDetect `AdaptiveDetector` on the **source video**, then the cut
-     timecodes are mapped onto extracted frame indices via the working fps.
-     This is the accurate one — it sees every source frame, not one in five.
-  2. An HSV-histogram fallback over the **extracted frames**, used whenever the
+  1. FFmpeg's `scdet` scores, captured during the extraction on frames it was
+     decoding anyway (`analysis/scene_scores.json`). Free, in the sense that
+     matters: no second decode of the source. This is what §15.4's flat curation
+     bar was waiting for.
+  2. PySceneDetect `AdaptiveDetector` on the **source video**, which decodes the
+     whole file again. Kept as the fallback and as the forced option, because it
+     is the reference this detector was measured against.
+  3. An HSV-histogram fallback over the **extracted frames**, used whenever the
      source video is gone, unreadable, or mpdecimate has broken the
-     frame-index <-> timecode mapping the first path depends on.
+     frame-index <-> timecode mapping the first two paths depend on.
 
-Both return the same thing: the frame indices that *start* a new sequence.
+All three return the same thing: the frame indices that *start* a new sequence.
 """
 
 import math
+import re
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import cv2
 import numpy as np
+
+# ── Scene scores produced during extraction ──────────────────────────────────
+#
+# FFmpeg's `scdet` filter scores every *source* frame while the extraction is
+# already decoding it, so the cuts cost no second decode of the video (§15.4:
+# PySceneDetect re-decoding the source is where the curation bar sat flat —
+# measured at 318 s on a 52 s 4K/100fps rush, against 5 s for this branch).
+#
+# One line pair per frame, as `metadata=mode=print` writes it:
+#     frame:743  pts:743     pts_time:24.7667
+#     lavfi.scd.score=1.203
+_SCD_HEADER = re.compile(r"^frame:(\d+)\s+pts:(\S+)\s+pts_time:(\S+)")
+_SCD_SCORE = re.compile(r"^lavfi\.scd\.score=([0-9.]+)")
+
+# Both bars again, for the same asymmetry as the histogram fallback below: a
+# missed cut costs a wide sharpness window, an invented one resets the overlap
+# gate mid-shot.
+#
+# Measured on this workstation. Two real hard cuts in a spliced source scored
+# 14.59 and 13.14; across four genuinely continuous rushes (a 4080x4080 h264
+# turntable, a 4K stabilised walk, a portrait HEVC pan and a 4K/100fps orbit)
+# the *highest* score seen anywhere was 2.51, with medians of 0.009-0.066. A
+# floor of 6 sits more than 2x clear of both, and FFmpeg's own scdet default is
+# 10. The frame straight after a cut echoes it (4.51 and 2.49 in the same
+# measurement), which is what min_scene_len suppresses.
+SCORE_RELATIVE_K = 8.0
+SCORE_MIN_ABSOLUTE = 6.0
 
 # Frames the fallback compares at; cut detection needs colour layout, not detail.
 FALLBACK_MAX_DIM = 320
@@ -97,6 +129,102 @@ def detect_from_video(
     return sorted(set(boundaries))
 
 
+def parse_scdet_metadata(path: Path) -> tuple[list[float], list[float]]:
+    """Read FFmpeg's `metadata=mode=print` dump into (pts_times, scores).
+
+    Tolerant by construction: a header with no score line after it, or a score
+    with no header before it, is skipped rather than raising. The file is
+    written by a filter running next to a 4K decode, and a partial last line is
+    the normal shape of an aborted run.
+    """
+    times: list[float] = []
+    scores: list[float] = []
+    pending: Optional[float] = None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], []
+
+    for line in text.splitlines():
+        header = _SCD_HEADER.match(line)
+        if header:
+            try:
+                pending = float(header.group(3))
+            except ValueError:
+                pending = None
+            continue
+        score = _SCD_SCORE.match(line)
+        if score is not None and pending is not None:
+            times.append(pending)
+            scores.append(float(score.group(1)))
+            pending = None
+    return times, scores
+
+
+def scores_cover_source(times: Sequence[float], duration_s: Optional[float]) -> bool:
+    """True when the score series spans the whole source, not a tail of it.
+
+    This is not paranoia about a missing file — it is the one way `metadata=print`
+    fails silently. FFmpeg rebuilds the filter graph when the input's resolution,
+    pixel format or SAR changes mid-stream, and the rebuilt `metadata` filter
+    reopens its output in write mode: everything scored before that point is
+    truncated away, and the frame counter restarts at 0 while pts_time carries on.
+    Measured on a spliced 3-segment source, a 720-frame video left 240 scores
+    whose first entry sat at t=16 s.
+
+    A normal single-camera rush never reinitialises, so this only ever fires on
+    the sources where the cuts would have been wrong. The caller falls back to
+    PySceneDetect, which decodes the video itself and cannot be fooled this way.
+    """
+    if not times:
+        return False
+    if not duration_s or duration_s <= 0:
+        # No probe to compare against; trust the file if it starts at the top.
+        return times[0] <= 1.0
+    return times[0] <= 1.0 and times[-1] >= 0.90 * duration_s
+
+
+def detect_from_scene_scores(
+    times: Sequence[float],
+    scores: Sequence[float],
+    frame_count: int,
+    working_fps: float,
+    min_scene_len_frames: int = 15,
+    relative_k: float = SCORE_RELATIVE_K,
+    min_absolute: float = SCORE_MIN_ABSOLUTE,
+) -> list[int]:
+    """Cut indices from the scdet scores captured during extraction.
+
+    Same contract as `detect_from_video`: source timecodes mapped onto extracted
+    frame numbers through the working fps, returned as sequence-start indices.
+
+    A cut must clear both bars — a local outlier *and* a large absolute score.
+    `scdet` normalises its score to 0-100 (it is min(MAFD, |MAFD - previous
+    MAFD|)), so an absolute floor is meaningful here in the way it never is for
+    a Tenengrad sharpness score.
+    """
+    if working_fps <= 0:
+        raise ValueError("working_fps must be > 0 to map cuts onto frame indices")
+    if len(scores) < 2:
+        raise ValueError("not enough scene scores to detect anything")
+
+    arr = np.asarray(scores, dtype=float)
+    median = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - median))) or 1e-6
+    threshold = max(median + relative_k * mad, min_absolute)
+
+    # The gap is enforced in extracted frames, which is the unit min_scene_len is
+    # expressed in and the unit the overlap gate resets on.
+    boundaries: list[int] = [0]
+    for i in range(1, len(arr)):
+        if arr[i] <= threshold:
+            continue
+        idx = math.floor(times[i] * working_fps)
+        if 0 < idx < frame_count and (idx - boundaries[-1]) >= min_scene_len_frames:
+            boundaries.append(idx)
+    return boundaries
+
+
 def _hsv_histogram(path: Path, max_dim: int = FALLBACK_MAX_DIM) -> Optional[np.ndarray]:
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
@@ -169,8 +297,17 @@ def detect_sequences(
     detector: str = "adaptive",
     min_scene_len_frames: int = 15,
     progress_cb: Optional[Callable[[int, int], None]] = None,
+    scene_scores: Optional[dict] = None,
+    cut_source: str = "auto",
 ) -> tuple[list[int], str]:
-    """Resolve one sequence id per frame. Returns (ids, method_used)."""
+    """Resolve one sequence id per frame. Returns (ids, method_used).
+
+    `scene_scores` is what the extraction captured on its way past
+    (`analysis/scene_scores.json`); when it is usable it costs no decode at all,
+    which is the whole point. `cut_source` forces a path: "video" pins
+    PySceneDetect, "frames" pins the histogram fallback, "auto" tries them in
+    order of preference.
+    """
     n = len(paths)
     if n == 0:
         return [], "empty"
@@ -178,7 +315,22 @@ def detect_sequences(
     if detector == "off":
         return [0] * n, "off (single sequence)"
 
-    if video_path is not None and video_path.exists() and working_fps:
+    if cut_source == "auto" and scene_scores and working_fps:
+        times = scene_scores.get("times") or []
+        values = scene_scores.get("scores") or []
+        if scores_cover_source(times, scene_scores.get("source_duration_s")):
+            try:
+                boundaries = detect_from_scene_scores(
+                    times, values, n, working_fps, min_scene_len_frames
+                )
+                return (
+                    sequence_ids(n, boundaries),
+                    f"FFmpeg scdet, {len(values)} source frames scored during extraction",
+                )
+            except Exception:  # noqa: BLE001 — the fallbacks are the whole point
+                pass
+
+    if cut_source != "frames" and video_path is not None and video_path.exists() and working_fps:
         try:
             boundaries = detect_from_video(
                 video_path, n, working_fps, detector, min_scene_len_frames

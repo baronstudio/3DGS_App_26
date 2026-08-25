@@ -106,6 +106,15 @@ export interface RCSettingsType {
 // lets the build pick, which is MRNF.
 export type LFSStrategy = 'default' | 'mcmc' | 'mrnf' | 'igs+';
 
+// v0.5.3's --mask-mode values. Only reachable when step 2 kept an alpha channel
+// and step 3 got it as far as the dataset (§6.7); 'none' sends no flag.
+export type MaskMode =
+  | 'none'
+  | 'ignore'
+  | 'segment'
+  | 'segment_and_ignore'
+  | 'alpha_consistent';
+
 export interface LFSSettingsType {
   iterations: number;
   strategy: LFSStrategy;
@@ -114,6 +123,8 @@ export interface LFSSettingsType {
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
+  /** --mask-mode. Sent only when the dataset actually carries masks (§6.7). */
+  mask_mode: MaskMode;
 }
 
 // ── App defaults (defaults.json — layer 2 of the settings model) ─────────────
@@ -143,12 +154,16 @@ export interface ExtractDefaults {
   /** Percentage of the source resolution written to disk. 100 = no downscale. */
   scale_percent: number;
   max_frames: number;
+  /** Imported image sets only: keep a PNG alpha channel and write RS masks
+   *  from it. A video can never produce one — FFmpeg writes mjpeg. */
+  keep_alpha: boolean;
 }
 
 export interface CurateDefaults {
   enabled: boolean;
   auto_after_extract: boolean;
   scene_detector: 'adaptive' | 'content' | 'off';
+  cut_source: 'auto' | 'video' | 'frames';
   min_scene_len: number;
   sharpness_window: number;
   sharpness_sensitivity: number;
@@ -230,6 +245,8 @@ export interface LFSDefaults {
   eval: boolean;
   save_eval_images: boolean;
   background_color: string;
+  /** `--mask-mode`, sent only when the dataset actually has masks. */
+  mask_mode: MaskMode;
 }
 
 export interface ExportDefaults {
@@ -401,11 +418,65 @@ export interface SourceFile {
   is_extraction_source: boolean;
 }
 
+/** A folder of already-extracted frames, imported from disk or from a zip. */
+export interface ImageSet {
+  name: string;
+  kind: 'images';
+  image_count: number;
+  total_bytes: number;
+  avg_bytes: number;
+  /** How many images of each extension: `{ '.png': 312 }`. */
+  formats: Record<string, number>;
+  width: number | null;
+  height: number | null;
+  /** False when the sampled images do not all share one resolution. */
+  uniform_size: boolean;
+  /** What the set would last at `nominal_fps` — a unit, not a property of the
+   *  set: nothing in the curation of an image set reads a timecode. */
+  duration_s: number;
+  nominal_fps: number;
+  /** The images declare an alpha channel (PNG colour type 4 or 6). */
+  has_alpha: boolean;
+  /** Sampled: some pixel is actually non-opaque. `null` = not verified. */
+  alpha_in_use: boolean | null;
+  /** The conformed name the import wrote: `my_shoot_%04d`. */
+  pattern: string;
+  /** How the originals were named before the import: `DSC_####.JPG`. */
+  original_pattern: string;
+  origin: 'zip' | 'folder' | 'upload';
+  origin_name: string;
+  origin_path: string;
+  imported_at: string | null;
+  first_image: string | null;
+  url: string | null;
+  thumb_url?: string | null;
+  is_extraction_source?: boolean;
+}
+
+export type InputSourceKind = 'video' | 'images' | 'none';
+
 export interface SourcesResponse {
   sources: SourceFile[];
+  image_sets: ImageSet[];
   extraction_source: string | null;
+  /** What step 2 will read. An imported set wins over a video in `input/`. */
+  source_kind: InputSourceKind;
+  source_name: string | null;
   video_count: number;
   ffmpeg_available: boolean;
+}
+
+/** What an import wrote, as `input/<set>/imageset.json` records it. */
+export interface ImageSetManifest {
+  name: string;
+  origin: 'zip' | 'folder' | 'upload';
+  origin_name: string;
+  origin_path: string;
+  imported_at: string;
+  image_count: number;
+  pattern: string;
+  original_pattern: string;
+  files: { index: number; filename: string; original: string }[];
 }
 
 // -- 3D viewer (wizard steps 3, 4 and 5) -------------------------------------

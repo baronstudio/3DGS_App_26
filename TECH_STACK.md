@@ -306,7 +306,7 @@ Path alias `@` → `./src`; TypeScript is strict.
 
 | Tool | Version on this workstation | Invoked by | Path key |
 |---|---|---|---|
-| **FFmpeg** | 8.1.1-full_build (gyan.dev, gcc 15.2.0) | `step_extract`, `sources` (poster frames) | `ffmpeg_path` |
+| **FFmpeg** | 8.1.1-full_build (gyan.dev, gcc 15.2.0) | `step_extract` (incl. the `scdet` cut-detection branch, CLAUDE.md §6.6), `sources` (poster frames) | `ffmpeg_path`, `ffmpeg_hwaccel` |
 | **ffprobe** | same build | `core/probe.py` | derived from `ffmpeg_path` |
 | **RealityScan** | 2.2 (Epic Games) | `step_rc` | `rc_exe_path` |
 | **LichtFeld Studio** | v0.5.3 | `step_lfs` | `lfs_exe_path` |
@@ -390,7 +390,7 @@ restore progress, routed to the modal dialog instead of to `stepProgress`).
 
 | Layer | Store | Contents | Route |
 |---|---|---|---|
-| **Installation** | `config.json` | 5 keys: `rc_exe_path`, `lfs_exe_path`, `ffmpeg_path`, `blender_exe_path`, `supersplat_url` | `/api/settings` |
+| **Installation** | `config.json` | 6 keys: `rc_exe_path`, `lfs_exe_path`, `ffmpeg_path`, `ffmpeg_hwaccel`, `blender_exe_path`, `supersplat_url` | `/api/settings` |
 | **Defaults** | `defaults.json` | `schema_version: 1` + 7 sections: `extract`, `curate`, `rc` (incl. nested `colmap.undistort`), `lfs`, `export`, `blender`, `viewer` | `/api/defaults` |
 | **Per project** | `Project.settings_json` | only the keys this project overrides | `PATCH /api/projects/{id}` |
 

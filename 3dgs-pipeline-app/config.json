@@ -3,5 +3,6 @@
     "lfs_exe_path": "C:\\Program Files\\LichtFeld-Studio-windows-v0.5.3\\bin\\LichtFeld-Studio.exe",
     "ffmpeg_path": "C:\\Users\\jbbar\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.exe",
     "blender_exe_path": "C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe",
-    "supersplat_url": "https://superspl.at/editor"
+    "supersplat_url": "https://superspl.at/editor",
+    "ffmpeg_hwaccel": "cuda"
 }

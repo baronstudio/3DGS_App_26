@@ -6,6 +6,7 @@ interface AppConfig {
     rc_exe_path: string | null;
     lfs_exe_path: string | null;
     ffmpeg_path: string;
+    ffmpeg_hwaccel: string;
     blender_exe_path: string | null;
     supersplat_url: string;
   };

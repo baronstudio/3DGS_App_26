@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from backend.core.config import app_config
+from backend.core.steps import rc_alpha
 from backend.core.defaults import LFSDefaults, load_defaults
 from backend.core.project_ops import reset_steps
 from backend.core.proc import (
@@ -73,8 +74,34 @@ def resolve_dataset(project_path: Path) -> dict:
     return {"path": project_path / "rc_output", "kind": "nerf", "colmap": report}
 
 
+def dataset_masks(dataset: Path) -> dict:
+    """Whether this dataset gives LichtFeld Studio anything to mask with.
+
+    Two channels, both v0.5.3's own: an alpha channel in the images themselves
+    ("Using alpha channel as mask source"), and a `masks/` folder beside
+    `images/` ("Mask mode enabled but no masks found in {}/masks/").
+
+    The alpha is the one this app produces today - carried inside the images
+    from an imported PNG set, through RealityScan's COLMAP export (rc_alpha.py).
+    The folder is read because RS can write masks of its own from the
+    Reconstruction Region and the mesh, in its own undistorted geometry; when
+    the app drives that, they land here and this function already sees them.
+    """
+    masks_dir = dataset / "masks"
+    count = 0
+    if masks_dir.is_dir():
+        count = sum(1 for f in masks_dir.rglob("*") if f.is_file())
+    alpha = bool(rc_alpha.export_keeps_alpha(dataset)) if not count else False
+    reason = (
+        f"{count} file(s) in masks/" if count
+        else ("the images carry an alpha channel" if alpha else "none")
+    )
+    return {"count": count, "alpha": alpha, "reason": reason}
+
+
 def build_lfs_command(
-    lfs_exe: Path, dataset_dir: Path, lfs_output: Path, lfs: LFSDefaults
+    lfs_exe: Path, dataset_dir: Path, lfs_output: Path, lfs: LFSDefaults,
+    masks: bool = False,
 ) -> list[str]:
     """The v0.5.3 command line for one training run.
 
@@ -104,6 +131,13 @@ def build_lfs_command(
             cmd.append("--no-save-eval-images")
     if lfs.background_color:
         cmd += ["--bg-color", lfs.background_color]
+    # Only when the dataset actually has masks - either a masks/ folder carried
+    # over from step 3 or an alpha channel that survived RS's export (§6.7).
+    # Sending the flag on a dataset with neither makes v0.5.3 answer "Mask mode
+    # enabled but no masks found in <d>/masks/", which is a warning about a
+    # setting the user never chose.
+    if masks and lfs.mask_mode != "none":
+        cmd += ["--mask-mode", lfs.mask_mode]
     return cmd
 
 
@@ -166,7 +200,20 @@ async def run_lfs(project_path: Path, broadcast_fn, settings: dict) -> dict:
         )
 
     lfs = resolve_lfs_settings(settings)
-    cmd = build_lfs_command(lfs_exe, Path(dataset["path"]), lfs_output, lfs)
+    dataset_path = Path(dataset["path"])
+    masks = dataset_masks(dataset_path)
+    if masks["count"] or masks["alpha"]:
+        await broadcast_fn(
+            "lfs", "INFO",
+            f"[LFS] Training with masks: {masks['reason']} - sending "
+            f"--mask-mode {lfs.mask_mode}."
+            if lfs.mask_mode != "none" else
+            f"[LFS] The dataset carries masks ({masks['reason']}) but mask mode "
+            "is off in the settings - they are ignored.",
+        )
+    cmd = build_lfs_command(
+        lfs_exe, dataset_path, lfs_output, lfs, masks["count"] > 0 or masks["alpha"]
+    )
     await broadcast_fn("lfs", "INFO", f"[LFS] Launching: {' '.join(cmd)}")
 
     loop = asyncio.get_running_loop()

@@ -14,6 +14,16 @@ interface LFSSettingsProps {
 
 // The strategies LichtFeld Studio v0.5.3 accepts on --strategy. "Default" sends
 // no flag at all and leaves the choice to the build, which currently means MRNF.
+// v0.5.3's own values (`--mask-mode` in --help). The wording of each hint is
+// what the build does, not a guess at what it should do.
+const MASK_MODES: { value: LFSSettingsType['mask_mode']; label: string; hint: string }[] = [
+  { value: 'ignore', label: 'Ignore masked pixels', hint: 'Masked pixels are left out of the loss — the background is simply not supervised. The match for a cut-out sequence.' },
+  { value: 'segment', label: 'Segment', hint: 'Uses the mask to separate object from background rather than only excluding it.' },
+  { value: 'segment_and_ignore', label: 'Segment and ignore', hint: 'Both of the above.' },
+  { value: 'alpha_consistent', label: 'Alpha consistent', hint: 'Enforces consistency between the rendered alpha and the mask.' },
+  { value: 'none', label: 'Off', hint: 'Sends no flag: masks are ignored and the whole frame is trained.' },
+];
+
 const STRATEGIES: { value: LFSSettingsType['strategy']; label: string; hint: string }[] = [
   {
     value: 'default',
@@ -122,6 +132,35 @@ const LFSSettings: React.FC<LFSSettingsProps> = ({ settings, onChange }) => {
             </div>
           ))}
         </RadioGroup>
+      </div>
+
+      <Separator className="bg-slate-700/50" />
+
+      {/* Masks */}
+      <div className="space-y-2">
+        <Label>Mask mode</Label>
+        <RadioGroup
+          value={settings.mask_mode}
+          onValueChange={(v) => update('mask_mode', v as LFSSettingsType['mask_mode'])}
+          className="flex flex-col gap-2"
+        >
+          {MASK_MODES.map(({ value, label, hint }) => (
+            <div key={value} className="flex items-center gap-2">
+              <RadioGroupItem value={value} id={`mask-${value}`} />
+              <Label htmlFor={`mask-${value}`} className="text-slate-400 cursor-pointer">
+                {label}
+              </Label>
+              <span title={hint} className="text-slate-500 hover:text-slate-300 cursor-help">
+                <Info className="h-3.5 w-3.5" />
+              </span>
+            </div>
+          ))}
+        </RadioGroup>
+        <p className="text-xs text-slate-500">
+          Only used when the dataset actually has masks — an alpha channel that
+          survived RealityScan's export, or a masks/ folder beside images/. A
+          video extraction produces neither, and the flag is then not sent.
+        </p>
       </div>
 
       <Separator className="bg-slate-700/50" />

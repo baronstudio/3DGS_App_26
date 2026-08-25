@@ -19,6 +19,7 @@ from typing import Awaitable, Callable, Iterable, Optional
 PROJECT_SUBDIRS = (
     "input",
     "frames",
+    "masks",
     "analysis",
     "report",
     "rc_output",
@@ -31,7 +32,7 @@ PROJECT_SUBDIRS = (
 # source video. Steps 5 and 6 share `export/` — 5 fills it, 6 adds the Blender
 # scene to it, so resetting 5 necessarily invalidates 6 as well.
 STEP_ARTEFACTS: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    2: (("frames", "analysis", "report"), ()),
+    2: (("frames", "masks", "analysis", "report"), ()),
     3: (("rc_output",), ()),
     4: (("lfs_output",), ()),
     5: (("export",), ()),

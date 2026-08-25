@@ -80,6 +80,27 @@ const CurateSettings: React.FC<CurateSettingsProps> = ({ settings, preset, onCha
             </Select>
           </Row>
 
+          {settings.scene_detector !== 'off' && (
+            <Row
+              label="Detected from"
+              hint="Auto reads the scene scores FFmpeg captured while it was extracting, so curation never decodes the source a second time — and falls back to PySceneDetect on its own when they are missing or the extraction predates them. PySceneDetect is the reference detector; it costs a full decode of the video."
+            >
+              <Select
+                value={settings.cut_source}
+                onValueChange={(v) => update('cut_source', v as CurateDefaults['cut_source'])}
+              >
+                <SelectTrigger className="bg-slate-950 border-slate-700 text-slate-100">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700 text-slate-100">
+                  <SelectItem value="auto">Auto — from the extraction (fast)</SelectItem>
+                  <SelectItem value="video">PySceneDetect on the source video</SelectItem>
+                  <SelectItem value="frames">The extracted frames only</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+          )}
+
           <Row
             label="Minimum sequence length"
             value={`${settings.min_scene_len} frames`}

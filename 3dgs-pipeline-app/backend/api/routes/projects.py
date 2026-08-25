@@ -6,12 +6,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from backend.api.routes.pipeline import is_running
 from backend.api.websocket import broadcast
+from backend.core import imageset
 from backend.core.curate.select import DROP, KEEP
 from backend.core.defaults import deep_merge
 from backend.core.project_ops import (
@@ -479,6 +480,207 @@ async def upload_input_file(
     target.write_bytes(contents)
 
     return {"filename": raw_name, "size_bytes": len(contents)}
+
+
+# -- Image sets: a folder or a zip of already-extracted frames (6.7) ----------
+
+
+class ImportFolderBody(BaseModel):
+    """A folder *on this machine*, read server-side.
+
+    Not an upload: the app runs on the workstation that holds the files (1),
+    and pushing 20 GB of PNG through multipart to write it back onto the same
+    disk is a copy with extra steps. The browser cannot read a path, so the
+    user types or pastes one - which is also the only way this works for a
+    folder that is not under the project.
+    """
+
+    path: str
+    name: Optional[str] = None
+
+
+def _import_target(session: Session, id: str) -> tuple[Project, Path]:
+    """The project's `input/`, once it is safe to write into.
+
+    Same two guards as every other file operation (14): never while a job is
+    running for this project, never on an archived one - an import lands in the
+    directory the extraction reads.
+    """
+    project = _require_project(session, id)
+    _require_idle(project)
+    _require_live(project)
+    input_dir = get_project_path(project.slug) / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    return project, input_dir
+
+
+@router.get("/{id}/image-sets")
+async def list_image_sets(id: str, session: Session = Depends(get_session)):
+    project = _require_project(session, id)
+    input_dir = get_project_path(project.slug) / "input"
+    loop = asyncio.get_running_loop()
+    sets = await loop.run_in_executor(
+        None,
+        lambda: [
+            # `deep=False`: this listing is polled by step 1, and sampling three
+            # images with cv2 to answer the alpha question belongs to the step 2
+            # panel that actually asks it.
+            imageset.describe_set(d, project.slug, deep=False)
+            for d in imageset.find_image_sets(input_dir)
+        ],
+    )
+    return {"sets": sets}
+
+
+@router.post("/{id}/import-folder")
+async def import_image_folder(
+    id: str,
+    body: ImportFolderBody,
+    session: Session = Depends(get_session),
+):
+    project, input_dir = _import_target(session, id)
+    folder = Path(body.path.strip().strip('"'))
+
+    await broadcast("project", "INFO", f"[import] Reading {folder}...", progress=0.0)
+    loop = asyncio.get_running_loop()
+    try:
+        manifest = await asyncio.to_thread(
+            imageset.import_folder, folder, input_dir, body.name or "",
+            _thread_progress(loop, "import", folder.name),
+        )
+    except (NotADirectoryError, FileNotFoundError) as exc:
+        await broadcast("project", "ERROR", f"[import] {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001 - the message is the answer
+        await broadcast("project", "ERROR", f"[import] Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {exc}")
+
+    await broadcast(
+        "project", "SUCCESS",
+        f"[import] {manifest['image_count']} images -> input/{manifest['name']}/",
+        progress=1.0,
+    )
+    return manifest
+
+
+@router.post("/{id}/import-zip")
+async def import_image_zip(
+    id: str,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    """A dropped zip of images, unpacked into `input/<conformed-name>/`.
+
+    The upload is streamed to disk in chunks rather than read into memory: a zip
+    of 900 PNGs is gigabytes, and `await file.read()` would hold all of it at
+    once to write the same bytes out again.
+    """
+    project, input_dir = _import_target(session, id)
+
+    raw_name = Path(file.filename or "images.zip").name
+    if Path(raw_name).suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="Only a .zip of images is accepted")
+
+    staged = input_dir / f".incoming_{raw_name}"
+    await broadcast("project", "INFO", f"[import] Receiving {raw_name}...", progress=0.0)
+    try:
+        with staged.open("wb") as dst:
+            await asyncio.to_thread(shutil.copyfileobj, file.file, dst, 1024 * 1024)
+    except Exception as exc:  # noqa: BLE001
+        staged.unlink(missing_ok=True)
+        await broadcast("project", "ERROR", f"[import] Upload failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
+    loop = asyncio.get_running_loop()
+    try:
+        manifest = await asyncio.to_thread(
+            imageset.import_zip, staged, input_dir, Path(raw_name).stem,
+            _thread_progress(loop, "import", raw_name), True, raw_name,
+        )
+    except FileNotFoundError as exc:
+        staged.unlink(missing_ok=True)
+        await broadcast("project", "ERROR", f"[import] {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        staged.unlink(missing_ok=True)
+        await broadcast("project", "ERROR", f"[import] Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {exc}")
+
+    await broadcast(
+        "project", "SUCCESS",
+        f"[import] {manifest['image_count']} images from {raw_name} -> "
+        f"input/{manifest['name']}/",
+        progress=1.0,
+    )
+    return manifest
+
+
+@router.post("/{id}/import-images")
+async def import_image_files(
+    id: str,
+    files: list[UploadFile] = File(...),
+    name: str = Form(""),
+    session: Session = Depends(get_session),
+):
+    """A selection of image files, or a folder picked in the browser.
+
+    The browser's folder picker sends every file individually, so this is the
+    same route either way. It is the slow lane by construction - every byte
+    travels through HTTP - which is why `import-folder` exists next to it.
+    """
+    project, input_dir = _import_target(session, id)
+
+    staging = input_dir / ".incoming_files"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+
+    try:
+        kept: list[tuple[Path, str]] = []
+        for position, upload in enumerate(files):
+            original = Path(upload.filename or f"image_{position}").name
+            if Path(original).suffix.lower() not in imageset.IMAGE_SUFFIXES:
+                continue
+            # Prefixed while staged so two folders' `IMG_0001.jpg` cannot
+            # collide; the real name travels beside it into the manifest.
+            target = staging / f"{position:06d}_{original}"
+            with target.open("wb") as dst:
+                await asyncio.to_thread(shutil.copyfileobj, upload.file, dst, 1024 * 1024)
+            kept.append((target, original))
+
+        if not kept:
+            raise HTTPException(status_code=400, detail="No image among the uploaded files")
+
+        kept.sort(key=lambda pair: imageset.natural_key(pair[1]))
+        set_name = imageset.unique_name(
+            input_dir, imageset.conform_name(name or Path(kept[0][1]).stem)
+        )
+        loop = asyncio.get_running_loop()
+        manifest = await asyncio.to_thread(
+            imageset.import_files,
+            [path for path, _ in kept], input_dir, set_name,
+            "upload", "", "", True,
+            _thread_progress(loop, "import", set_name),
+            [original for _, original in kept],
+        )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    await broadcast(
+        "project", "SUCCESS",
+        f"[import] {manifest['image_count']} images -> input/{manifest['name']}/",
+        progress=1.0,
+    )
+    return manifest
+
+
+@router.delete("/{id}/image-sets/{name}")
+async def delete_image_set(id: str, name: str, session: Session = Depends(get_session)):
+    project, input_dir = _import_target(session, id)
+    target = input_dir / Path(name).name  # no directory component, no traversal
+    if not target.is_dir() or not imageset.is_image_set(target):
+        raise HTTPException(status_code=404, detail="Image set not found")
+    await asyncio.to_thread(shutil.rmtree, target, True)
+    return {"deleted": target.name}
 
 
 @router.delete("/{id}/input-files/{filename}")
