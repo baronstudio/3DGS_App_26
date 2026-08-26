@@ -208,6 +208,67 @@ def build_mask_export_params(colmap: ColmapExportDefaults, dest: Path) -> Path:
     )
 
 
+def check_format_registered(rc_exe: Path) -> dict:
+    """Is the COLMAP exporter registered in *this* RealityScan install?
+
+    The GUID above is the only thing that says which exporter `-exportRegistration`
+    runs, and RealityScan resolves it against `calibration.xml` next to its own
+    executable. When it does not resolve, RS does not fail and does not say so:
+    measured on the staging workstation, all five projects exported to
+    `<slug>_COLMAP/colmap.txt` a plain list of the *source* frame paths — which
+    is byte for byte the body of the **first** `<format>` in the file,
+
+        <format … desc="Image List" writer="cvs">
+          <body>$ExportCameras($(imagePath)$(imageName)$(imageExt)
+    )</body>
+
+    — so an unresolved id falls back to format one. The alignment succeeds, the
+    step reports success, and the defect only surfaces two steps later as
+    "no cameras/images pair under sparse/0", or at the mask run, which cannot
+    start without the dataset (step_masks.py). Same install, same params file,
+    same RealityScan build (2.2.0.119430): the difference is the registration.
+
+    Never raises — a check that cannot read the file answers `checked: False`
+    and the run goes ahead, because an unreadable `calibration.xml` is not a
+    reason to refuse an alignment.
+    """
+    report: dict = {
+        "checked": False,
+        "path": str(rc_exe.parent / "calibration.xml"),
+        "registered": False,
+        "writer": None,
+        "fallback": None,
+        "reason": None,
+    }
+    calibration = rc_exe.parent / "calibration.xml"
+    if not calibration.is_file():
+        report["reason"] = "no calibration.xml beside RealityScan.exe"
+        return report
+
+    try:
+        formats = list(ET.parse(calibration).iter("format"))
+    except (ET.ParseError, OSError) as exc:
+        report["reason"] = f"calibration.xml could not be read ({exc})"
+        return report
+
+    report["checked"] = True
+    if formats:
+        report["fallback"] = formats[0].get("desc") or formats[0].get("id")
+
+    wanted = COLMAP_FORMAT_ID.strip("{}").lower()
+    for node in formats:
+        if (node.get("id") or "").strip("{}").lower() == wanted:
+            report["registered"] = True
+            report["writer"] = node.get("writer")
+            break
+    else:
+        report["reason"] = (
+            f"format {COLMAP_FORMAT_ID} (COLMAP) is not among the "
+            f"{len(formats)} export formats this install registers"
+        )
+    return report
+
+
 def verify_against_saved_params(saved: Path) -> dict:
     """Compare our parameter names against an XML saved from RS's export dialog.
 

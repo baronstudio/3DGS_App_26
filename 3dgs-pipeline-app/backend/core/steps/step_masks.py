@@ -87,11 +87,15 @@ from backend.core.proc import (
 from backend.core.steps import colmap_dataset
 from backend.core.steps import rc_alpha
 from backend.core.steps import rc_region
-from backend.core.steps.rc_export_params import build_mask_export_params
+from backend.core.steps.rc_export_params import (
+    build_mask_export_params,
+    check_format_registered,
+)
 from backend.core.steps.rc_progress import RCProgressTracker, plan_from_script
 from backend.core.steps.step_rc import (
     _classify_rc_line,
     check_colmap_export,
+    _missing_format_note,
     resolve_rc_settings,
     tail_progress,
 )
@@ -240,10 +244,21 @@ async def run_mask_generation(project_path: Path, broadcast_fn, settings: dict) 
 
     dataset, report = colmap_dataset.find_dataset(project_path)
     if not report["found"]:
+        # A re-run of step 3 is the answer only when the export *can* work.
+        # When this install does not register the COLMAP format there is
+        # nothing to re-run: RS will write the same image list again, silently
+        # (rc_export_params.check_format_registered).
+        registry = check_format_registered(rc_exe)
+        note = (
+            _missing_format_note(registry)
+            if registry["checked"] and not registry["registered"]
+            else None
+        )
         raise MaskRunError(
             f"No COLMAP dataset to put the masks in ({report['reason']}). "
             f"Expected it at {dataset} — re-run step 3 with the COLMAP export "
             f"enabled."
+            + (f"\n\n{note}" if note else "")
         )
 
     region_file = None

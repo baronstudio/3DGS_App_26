@@ -19,7 +19,11 @@ from backend.core.steps import colmap_dataset
 from backend.core.steps import rc_alpha
 from backend.core.steps import rc_region
 from backend.core.steps.rc_region import REGION_AUTO_FILENAME
-from backend.core.steps.rc_export_params import build_colmap_export_params
+from backend.core.steps.rc_export_params import (
+    COLMAP_FORMAT_ID,
+    build_colmap_export_params,
+    check_format_registered,
+)
 from backend.core.steps.rc_postprocess import (
     align_pointcloud_to_cameras,
     normalise_transforms,
@@ -448,6 +452,56 @@ async def check_alignment_coverage(
 
 # -- COLMAP export check -----------------------------------------------------
 
+def colmap_format_line(rc_exe: Path) -> tuple[str, str]:
+    """What this RealityScan install registers for the COLMAP export, every run.
+
+    Returns (level, line) — always a line, never a silence, for the reason the
+    region's frame check is logged on every run even when it is right
+    (CLAUDE.md 7.4): a check that only speaks when it fails cannot be told
+    apart from a check that is not running. That distinction cost a round trip
+    to the staging workstation, where "no warning appeared" was equally
+    consistent with "the format is registered" and "the backend was not
+    restarted".
+
+    An unreadable `calibration.xml` is INFO, not a warning: the export may well
+    work, and refusing to align over a file we could not open would be worse
+    than the defect it is looking for.
+    """
+    report = check_format_registered(rc_exe)
+    if report["registered"]:
+        return "INFO", (
+            f"[RS] COLMAP export format registered in {report['path']} "
+            f"(writer {report['writer']})."
+        )
+    if not report["checked"]:
+        return "INFO", (
+            f"[RS] Could not check which export formats this RealityScan "
+            f"registers: {report['reason']}. Carrying on."
+        )
+    return "WARNING", _missing_format_note(report)
+
+
+def _missing_format_note(report: dict) -> str:
+    """The sentence for an install whose calibration.xml has no COLMAP format.
+
+    Said in two places: before the alignment, where it costs nothing to act on,
+    and again beside the "nothing usable came out of it" warning, which is the
+    line a user actually reaches when nobody read the first one.
+    """
+    fallback = report["fallback"] or "the first one"
+    return (
+        f"[RS] This RealityScan install does not register the COLMAP export "
+        f"format: {report['reason']}, in {report['path']}. The format id is the "
+        f"only thing that selects an exporter, so -exportRegistration falls "
+        f"back to the first format in that file ({fallback}) and writes a list "
+        f"of source image paths where the dataset should be - no images/, no "
+        f"sparse/0/, and no masks (CLAUDE.md 7.2, 7.5). Copy the <format "
+        f"id=\"{COLMAP_FORMAT_ID}\" ... desc=\"COLMAP\" ...> element into that "
+        f"calibration.xml from an install that has it, or reinstall "
+        f"RealityScan 2.2."
+    )
+
+
 async def check_colmap_export(
     project_path: Path, rc: RCDefaults, broadcast_fn, step: str = "rc"
 ) -> dict:
@@ -470,8 +524,25 @@ async def check_colmap_export(
     dataset = colmap_dataset.colmap_dataset_dir(project_path)
     report = colmap_dataset.inspect(dataset)
     report["requested"] = rc.colmap.enabled
+    report["registry"] = check_format_registered(
+        Path(app_config.tools.rc_exe_path or "")
+    )
+
+    # Written beside alignment_check.json and for the same reason (7.1): the
+    # answer to "did the export this step exists for actually happen" must
+    # outlive the log line that announced it, or diagnosing it later means
+    # re-running the alignment to read a scrollback.
+    def _persist() -> None:
+        try:
+            (project_path / "rc_output").mkdir(parents=True, exist_ok=True)
+            (project_path / "rc_output" / "colmap_check.json").write_text(
+                json.dumps(report, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     if not rc.colmap.enabled:
+        _persist()
         return report
 
     if not report["found"]:
@@ -483,6 +554,12 @@ async def check_colmap_export(
             f"- look for an export error above, and check the settings in "
             f"rc_output/colmap_export_params.xml.",
         )
+        # Beside the symptom, not instead of it: `reason` is what came out of
+        # the directory, and this is why nothing came out at all.
+        registry = report["registry"]
+        if registry["checked"] and not registry["registered"]:
+            await broadcast_fn(step, "WARNING", _missing_format_note(registry))
+        _persist()
         return report
 
     # One camera for the whole set means the export ran but collapsed the
@@ -516,6 +593,7 @@ async def check_colmap_export(
             f"model is several hundred megabytes per run.",
         )
 
+    _persist()
     return report
 
 
@@ -654,6 +732,13 @@ async def run_rc(project_path: Path, broadcast_fn, settings: dict) -> dict:
 
     rc = resolve_rc_settings(settings)
     colmap_dir = colmap_dataset.colmap_dataset_dir(project_path)
+
+    # Before the hour of alignment, not after it: an install whose
+    # calibration.xml has no COLMAP format exports an image list instead of the
+    # dataset, without failing and without a word (rc_export_params.py).
+    if rc.colmap.enabled:
+        level, line = colmap_format_line(rc_exe)
+        await broadcast_fn("rc", level, line)
     if rc_alpha.frames_carry_alpha(frames_dir):
         await broadcast_fn(
             "rc", "INFO",
