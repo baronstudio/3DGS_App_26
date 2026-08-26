@@ -678,14 +678,67 @@ RealityScan's crash reporter — which is visible even under `-headless`, becaus
 RS surfaces a batch error in a window whatever the flag says. The cache is the
 application's and step 3 clears it.
 
-**Step 4 did not change and did not need to.** Measured on the exported
-dataset, 300 iterations each: masks as written, loss **0.153**; the same run
-with `--invert-masks`, **0.329**; with `--mask-mode none`, **0.212**; with
-`--no-alpha-as-mask`, **0.161**. So the mask files are read (inverting them
-wrecks the run), RealityScan's white-is-kept polarity is the one LichtFeld
-Studio wants with no `--invert-masks`, and the exported images' opaque alpha
-does not override them. `step_lfs.dataset_masks` finds `masks/` and sends
-`--mask-mode` on its own.
+~~**Step 4 did not change and did not need to.**~~ **Wrong, corrected
+2026-08-26.** Step 4 had to change, and the loss table this paragraph rested
+on could not tell what it was asked to tell: every one of those four runs read
+the *alpha*, not the mask files. The exported images are RGBA with a constant
+255 alpha — `undistortImagesWicPixlFormat` asks for "24-bit BGR" and
+RealityScan ignores it — and `--no-alpha-as-mask` is documented by the build
+as disabling an **automatic** behaviour: any RGBA image turns it on. The two
+sources are mutually exclusive and the alpha wins, which the trainer says out
+loud, one line or the other, never both:
+
+```
+Found 251 masks
+Mask mode: ignore
+Alpha-as-mask enabled (invert=false, threshold=0.5)      <- masks/ ignored
+Mask file loading enabled (invert=false, threshold=0.5)  <- with --no-alpha-as-mask
+```
+
+An all-255 alpha thresholds at 0.5 to "keep every pixel", so the run was
+unmasked while `Found 251 masks` and the app's own mask panel both reported
+success. `--invert-masks` inverting *that* to an all-zero mask is what made
+the 0.329 look like proof the files were read.
+
+So `build_lfs_command` sends `--no-alpha-as-mask` whenever the dataset carries
+mask files, and `rc_alpha.export_keeps_alpha` decodes the channel instead of
+trusting the PNG colour-type byte — a header-only answer called the alpha
+"carried" on an export whose source frames were JPEG and had no alpha at all.
+What the old table did establish still holds: RealityScan's white-is-kept
+polarity is the one LichtFeld Studio wants, with no `--invert-masks`.
+
+**`ignore` does not delete anything, and that is the second half of the
+bug.** It drops the masked pixels from the loss; a gaussian already sitting in
+the background is merely no longer supervised, and it stays. Measured on
+`publicsemples_truck`, three 13 000-iteration runs on one dataset, counting
+gaussians against the validated region box:
+
+| Run | gaussians | in region | opacity > 0.5 in region | p99 radius |
+|---|---|---|---|---|
+| unmasked (the alpha won) | 2 865 432 | 79.3 % | 60.6 % | 149.6 |
+| masked, `--mask-mode ignore` | 2 861 781 | 79.0 % | 58.9 % | 147.0 |
+| masked, `--mask-mode segment` | 2 665 071 | **96.3 %** | **98.9 %** | **19.5** |
+
+Reading the masks correctly moves nothing: `ignore` is within noise of the
+unmasked run on every column. `segment` is the whole effect — the
+99th-percentile radius collapses by 7.6×, which is the milky shell around the
+subject disappearing.
+
+So `mask_mode` is not a formatting detail, and `ignore` is the wrong default
+for the route 7.5 exists to serve: a user who draws a Reconstruction Region
+and generates masks from it is asking for the background to be *gone*, which
+is `segment`, not for it to be left unsupervised.
+
+**The frames had to be checked before any of that could be counted**, and the
+first attempt got it wrong. `region.json` is in the NeRF frame and
+`pointcloud.ply` carries the `Rx+90` marker that puts it there — the box
+reproduces its own stored `coverage` exactly, 44 253 / 57 482 = 76.99 %, which
+is what makes it a usable ruler. The **trained splat is not in that frame**:
+measured on a 1-unit occupancy grid, it sits at `Rx180` from the NeRF cloud
+(28.6 % cell overlap against 2.7 % at identity and 3.0–3.8 % at ±90°), which
+is what the COLMAP route's own `scene_rotate_x_deg = 180` implies. Counting
+the box without that rotation reports ~14 % inside for every run and hides the
+`segment` result completely.
 
 ---
 
@@ -858,6 +911,7 @@ Any new dependency → add a row here in the same commit.
 
 | 2026-08-25 | **`TransformControls.dispose()` is not called, because in three 0.169 it throws.** Every switch of the region gizmo's mode — and every unmount of the viewer, and every preview level change — died with `this.traverse is not a function` and took the React tree down to the step's error boundary. Upstream moved `TransformControls` from `Object3D` onto the new `Controls` base and left its `dispose()` calling `this.traverse(…)`, a method the class no longer has; the geometries it means to free hang off `getHelper()`, which *is* an `Object3D`. So the teardown calls `disconnect()` — the half that matters, since it is what removes the pointer listeners from the canvas — and walks the helper itself for the geometries and materials, which are safe to free because every one of them is built inside the `TransformControlsGizmo` constructor and shared with nothing. The gizmo is also **built once per box and re-pointed with `setMode`** rather than rebuilt per mode: switching mode is a click, and a teardown that is neither free nor safe should not be on that path. Same family as the `ui/button.tsx` forwardRef row (2026-08-21): a vendored component whose shape changed under a base class, silent until the one code path that touches it runs. |
 | 2026-08-25 | **RealityScan makes the masks, and it makes them inside its own COLMAP export (§7.5).** TODO P4's route was `-generateMaskFromMesh` + `-exportMapsAndMask <folder> <params.xml>`, then a delivery of that folder into the dataset through `rc_alpha`'s count/dimension/name checks. Measured on RealityScan 2.2.0.119430, `-exportMapsAndMask` writes `imageList.txt` — so the `ei*` keys recovered from the executable's string table were right as far as they go, `eiExportImageList` was honoured — and then answers **"Feature not implemented"** and fails the script, in a window, because RS surfaces a batch error in its GUI even under `-headless`. With one argument instead of two it reads that argument as the params file and fails differently (`err:5617`); the signature is both or neither. What does work is `colmapExportMasks`, an option of the exporter step 3 already drives: `-generateMaskFromMesh` puts a mask layer on every image, and re-running the COLMAP export with that option writes them to `<dataset>/masks/` **through the same undistortion block and under the same basenames as `images/`**. The two risks the feature was supposed to stand or fall on stop being questions — 251 masks against 251 images, name for name, `973x543` against `973x543` — so there is no `rs_masks/`, no delivery step, and no `rc_mask_params.py`: `build_mask_export_params` is `build_colmap_export_params` with two entries forced. Naming was decided by measurement rather than by the plan: `undistortNamingConvention = "$(imageName)"` is **ignored** by the COLMAP exporter, which numbers its images `00000.png` whatever it is told, so "set both exports to original naming" was not available — and did not need to be, since the masks are numbered by the same exporter in the same pass. Three things still had to be repaired or avoided. The masks arrive at **half** resolution (486x271 for a 973x543 image, all 251 of them) and neither `mvsPreviewDownscaleFactor=1` nor `txtImageDownscaleColor=1` moves it, so `rc_alpha.fit_dataset_masks` resizes `INTER_NEAREST` and flattens RGBA to greyscale in place, idempotently, in 1 s — LichtFeld Studio refuses a size mismatch rather than resizing. `-clearCache` is **not** in the script: after a mesh it answers "Cache contains current scene modifications. [err:5607]" and pops RS's crash reporter. And the mesh itself is cheap where it matters — preview quality is 2.3 s on 251 images, because a mask is a silhouette and not a surface. **Step 4 did not change**, which was the acceptance test: 300 iterations on the exported dataset gave loss 0.153 as written, 0.329 with `--invert-masks`, 0.212 with `--mask-mode none` and 0.161 with `--no-alpha-as-mask` — so the mask files are genuinely read, RS's white-is-kept polarity is LFS's, and the opaque alpha RS puts on every exported image does not override them. |
+| 2026-08-26 | **The mask files only win once the alpha is switched off, and the alpha RealityScan writes is a constant.** The mask route of 7.5 was built, measured and declared working, and every training run since had been unmasked. LichtFeld Studio v0.5.3 turns alpha-as-mask on **automatically** for any RGBA image (`--no-alpha-as-mask` is documented as *disabling* it), the two mask sources are mutually exclusive, and the alpha outranks the files — the trainer logs `Alpha-as-mask enabled` *or* `Mask file loading enabled`, never both. RealityScan's COLMAP exporter writes 4-channel PNGs whatever `undistortImagesWicPixlFormat` asks for (`defaults.json` has asked for `24-bit BGR` since the export was written), and that channel is a flat 255: measured on `publicsemples_truck`, 251/251 exported images RGBA, alpha min = max = 255, one unique value, on a project whose source frames were **JPEG and had no alpha at all**. Thresholded at 0.5 that means "keep every pixel", so the run trained on the full frame while `Found 251 masks` scrolled past and `/api/files/{id}/masks` reported `state: "ready"` — every indicator the app has said the masks were fine, because each of them was answering a question about the *files*. The naming was never the fault and was checked rather than assumed: `masks/00000.png` beside `images/00000.png` is what LFS pairs, all 251 matched, and moving the folder away makes it fail with `Mask mode enabled but no masks found in <d>/masks/` — the dataset's own layout is the contract, which is the whole point of 7.5 exporting the masks *through* the COLMAP writer. Two fixes. `build_lfs_command` sends `--no-alpha-as-mask` alongside `--mask-mode` whenever the dataset carries mask files, so the files take the precedence they were exported to have. And `rc_alpha.export_keeps_alpha` **decodes** the channel over the first, middle and last image instead of reading the PNG colour-type byte: a header-only answer reported the alpha "carried" for every export RS has ever made here, which is the latent half of the same bug — an imported RGBA set (6.7) would have been told its alpha survived, skipped the `masks/` delivery, and trained against a flat 255 with nothing on screen to say so. **A mask is a supervision gate, not an eraser**: `--mask-mode ignore` drops masked pixels from the loss and deletes no gaussian, so a background the sparse cloud already initialised stays. Three 13 000-iteration runs on one dataset, gaussians inside the validated region box: unmasked **79.3 %**, masked with `ignore` **79.0 %**, masked with `segment` **96.3 %** — and of the gaussians above opacity 0.5, 60.6 % / 58.9 % / **98.9 %**, with the 99th-percentile radius falling 149.6 → 147.0 → **19.5**. So reading the masks correctly is necessary and does nothing on its own; `segment` is where the background actually goes. `defaults.json` ships `mask_mode: "ignore"`, which is the wrong default for the route 7.5 exists to serve — someone who draws a region and generates masks from it wants the background gone, not unsupervised. Left as a settings question rather than changed under the user. **The frame is what makes any of this countable, and the first count was wrong**: `region.json` and `pointcloud.ply` are NeRF-frame (the box reproduces its stored `coverage` to the point, 44 253 / 57 482), but the COLMAP-trained splat sits at `Rx180` from them — 28.6 % occupancy-cell overlap against 2.7 % at identity — as `scene_rotate_x_deg = 180` implies. Counting without that rotation reports ~14 % for every run and hides the `segment` result entirely. |
 
 Any new structural decision → add a row here in the same commit.
 
