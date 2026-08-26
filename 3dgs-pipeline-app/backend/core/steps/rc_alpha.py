@@ -54,12 +54,25 @@ def _exported_images(dataset: Path) -> list[Path]:
 
 
 def export_keeps_alpha(dataset: Path) -> Optional[bool]:
-    """Whether RS's undistorted export still carries an alpha channel.
+    """Whether RS's undistorted export still carries a *usable* alpha channel.
 
-    Read from the PNG header of the first exported image — the channel is
-    declared there, and one file answers for the export as a whole because RS
-    writes them all through the same encoder. None when there is nothing to
-    read.
+    The PNG header is not the answer, and reading only the header was a real
+    defect. RealityScan's COLMAP exporter writes 4-channel PNGs whatever
+    `undistortImagesWicPixlFormat` asks for — `defaults.json` has asked for
+    "24-bit BGR" all along and RS ignores it — so the colour-type byte says
+    "alpha" on every export it has ever made here, including one whose source
+    frames were JPEG and had no alpha at all (publicsemples_truck: 251/251
+    exported images RGBA, alpha min 255, max 255, one unique value).
+
+    A constant channel is not a mask. LichtFeld Studio thresholds the alpha at
+    0.5, so an all-255 alpha means "keep every pixel" — and it **outranks** the
+    mask files rather than deferring to them (`trainer.cpp` logs either
+    "Alpha-as-mask enabled" or "Mask file loading enabled", never both). A
+    header-only answer therefore reported the alpha "carried" for a dataset
+    whose alpha carried nothing, which is how a masked project trains unmasked.
+
+    So the channel is decoded and its content is what answers, over the first,
+    middle and last exported image. None when there is nothing to read.
     """
     images = _exported_images(dataset)
     if not images:
@@ -67,7 +80,22 @@ def export_keeps_alpha(dataset: Path) -> Optional[bool]:
     info = imageset.read_image_info(images[0])
     if info.get("width") is None:
         return None
-    return bool(info.get("channels_alpha"))
+    if not info.get("channels_alpha"):
+        return False
+
+    import cv2  # local: most callers of this module never decode an image
+
+    picks = sorted({0, len(images) // 2, len(images) - 1})
+    for index in picks:
+        data = cv2.imread(str(images[index]), cv2.IMREAD_UNCHANGED)
+        if data is None or data.ndim != 3 or data.shape[2] < 4:
+            continue
+        alpha = data[:, :, 3]
+        # One value over the whole frame is a declared channel with nothing in
+        # it; anything else is a real cut-out and worth training against.
+        if alpha.min() != alpha.max():
+            return True
+    return False
 
 
 def frames_carry_alpha(frames_dir: Path) -> bool:

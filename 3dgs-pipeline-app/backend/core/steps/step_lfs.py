@@ -101,7 +101,7 @@ def dataset_masks(dataset: Path) -> dict:
 
 def build_lfs_command(
     lfs_exe: Path, dataset_dir: Path, lfs_output: Path, lfs: LFSDefaults,
-    masks: bool = False,
+    masks: bool = False, mask_files: bool = False,
 ) -> list[str]:
     """The v0.5.3 command line for one training run.
 
@@ -138,6 +138,18 @@ def build_lfs_command(
     # setting the user never chose.
     if masks and lfs.mask_mode != "none":
         cmd += ["--mask-mode", lfs.mask_mode]
+        # The two mask sources are mutually exclusive in v0.5.3, and the alpha
+        # wins: the trainer logs *either* "Alpha-as-mask enabled" *or* "Mask
+        # file loading enabled", never both. RealityScan's COLMAP exporter
+        # writes 4-channel PNGs whatever `undistortImagesWicPixlFormat` asks
+        # for, and that alpha is a constant 255 - measured on
+        # publicsemples_truck, all 251 exported images, one unique value. So a
+        # dataset carrying RS's own mesh masks trained against an all-opaque
+        # alpha, i.e. unmasked, while LFS still reported "Found 251 masks" and
+        # the app still reported the masks ready. This flag is what gives the
+        # files the precedence they were exported to have.
+        if mask_files:
+            cmd.append("--no-alpha-as-mask")
     return cmd
 
 
@@ -203,16 +215,29 @@ async def run_lfs(project_path: Path, broadcast_fn, settings: dict) -> dict:
     dataset_path = Path(dataset["path"])
     masks = dataset_masks(dataset_path)
     if masks["count"] or masks["alpha"]:
-        await broadcast_fn(
-            "lfs", "INFO",
-            f"[LFS] Training with masks: {masks['reason']} - sending "
-            f"--mask-mode {lfs.mask_mode}."
-            if lfs.mask_mode != "none" else
-            f"[LFS] The dataset carries masks ({masks['reason']}) but mask mode "
-            "is off in the settings - they are ignored.",
-        )
+        if lfs.mask_mode == "none":
+            message = (
+                f"[LFS] The dataset carries masks ({masks['reason']}) but mask "
+                "mode is off in the settings - they are ignored."
+            )
+        else:
+            message = (
+                f"[LFS] Training with masks: {masks['reason']} - sending "
+                f"--mask-mode {lfs.mask_mode}."
+            )
+            if masks["count"]:
+                # Not a detail: without it the exported images' constant-255
+                # alpha outranks the files and the run is silently unmasked.
+                message += (
+                    " Also sending --no-alpha-as-mask, so the mask files win "
+                    "over the opaque alpha RealityScan puts on every exported "
+                    "image."
+                )
+        await broadcast_fn("lfs", "INFO", message)
     cmd = build_lfs_command(
-        lfs_exe, dataset_path, lfs_output, lfs, masks["count"] > 0 or masks["alpha"]
+        lfs_exe, dataset_path, lfs_output, lfs,
+        masks["count"] > 0 or masks["alpha"],
+        mask_files=masks["count"] > 0,
     )
     await broadcast_fn("lfs", "INFO", f"[LFS] Launching: {' '.join(cmd)}")
 
