@@ -16,10 +16,11 @@ interface LFSSettingsProps {
 // no flag at all and leaves the choice to the build, which currently means MRNF.
 // v0.5.3's own values (`--mask-mode` in --help). The wording of each hint is
 // what the build does, not a guess at what it should do.
+// `ignore` is absent on purpose: it drops the masked pixels from the loss and
+// removes no gaussian, so it measures the same as an unmasked run (§7.5).
 const MASK_MODES: { value: LFSSettingsType['mask_mode']; label: string; hint: string }[] = [
-  { value: 'ignore', label: 'Ignore masked pixels', hint: 'Masked pixels are left out of the loss — the background is simply not supervised. The match for a cut-out sequence.' },
-  { value: 'segment', label: 'Segment', hint: 'Uses the mask to separate object from background rather than only excluding it.' },
-  { value: 'segment_and_ignore', label: 'Segment and ignore', hint: 'Both of the above.' },
+  { value: 'segment', label: 'Segment', hint: 'Uses the mask to separate object from background and remove it — the mode the mask route exists for.' },
+  { value: 'segment_and_ignore', label: 'Segment and ignore', hint: 'Segments the background out and also drops the masked pixels from the loss.' },
   { value: 'alpha_consistent', label: 'Alpha consistent', hint: 'Enforces consistency between the rendered alpha and the mask.' },
   { value: 'none', label: 'Off', hint: 'Sends no flag: masks are ignored and the whole frame is trained.' },
 ];

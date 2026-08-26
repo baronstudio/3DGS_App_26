@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 DEFAULTS_PATH = Path(__file__).parent.parent.parent / "defaults.json"
 
@@ -385,12 +385,27 @@ class LFSDefaults(BaseModel):
     background_color: str = "#000000"
     # `--mask-mode`, v0.5.3. Only sent when step 2 actually produced masks
     # (§6.7); "none" is the build's default and sends no flag at all, the same
-    # convention as `strategy`. The modes are the build's own — `ignore` keeps
-    # masked pixels out of the loss, which is the one that matches what an
-    # alpha channel from a cut-out sequence means.
+    # convention as `strategy`.
+    #
+    # `ignore` is deliberately **not** offered. It drops the masked pixels from
+    # the loss and deletes nothing, so a gaussian the sparse cloud already put
+    # in the background is merely no longer supervised and stays where it is —
+    # measured on three 13 000-iteration runs of `publicsemples_truck`, it is
+    # within noise of an unmasked run on every column (79.0 % of gaussians
+    # inside the region box against 79.3 % unmasked, p99 radius 147.0 against
+    # 149.6), while `segment` gives 96.3 % and 19.5 (§7.5). Someone who draws a
+    # Reconstruction Region and generates masks from it wants the background
+    # gone, which is what `segment` does. A project row or a defaults.json
+    # still carrying the old value is coerced below rather than refused.
     mask_mode: Literal[
-        "none", "ignore", "segment", "segment_and_ignore", "alpha_consistent"
-    ] = "ignore"
+        "none", "segment", "segment_and_ignore", "alpha_consistent"
+    ] = "segment"
+
+    @field_validator("mask_mode", mode="before")
+    @classmethod
+    def _drop_ignore(cls, v: Any) -> Any:
+        """`ignore` was the shipped default until 2026-08-26 — read it as `segment`."""
+        return "segment" if v == "ignore" else v
 
 
 class ExportDefaults(BaseModel):

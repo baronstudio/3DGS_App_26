@@ -114,9 +114,11 @@ export type LFSStrategy = 'default' | 'mcmc' | 'mrnf' | 'igs+';
 
 // v0.5.3's --mask-mode values. Only reachable when step 2 kept an alpha channel
 // and step 3 got it as far as the dataset (§6.7); 'none' sends no flag.
+// 'ignore' is not offered: it leaves the masked pixels unsupervised rather than
+// removing them, which measures the same as an unmasked run (§7.5). The backend
+// reads a stored 'ignore' as 'segment'.
 export type MaskMode =
   | 'none'
-  | 'ignore'
   | 'segment'
   | 'segment_and_ignore'
   | 'alpha_consistent';

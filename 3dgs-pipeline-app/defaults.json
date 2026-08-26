@@ -85,7 +85,7 @@
     "eval": false,
     "save_eval_images": false,
     "background_color": "#000000",
-    "mask_mode": "ignore"
+    "mask_mode": "segment"
   },
   "export": {
     "format": "ply",
