@@ -274,6 +274,24 @@ lines use. The resulting `UnicodeEncodeError` propagates out of the caller — i
 once killed the abort handler mid-way and left the step "running". `_debug()`
 swallows it: a debug line is never worth an exception.
 
+### Two of LichtFeld Studio's flags are negatives
+
+`build_lfs_command` in `core/steps/step_lfs.py` reads like a list of options
+turned on, and two entries do the opposite — they turn a *default* off, so the
+app sends them when the corresponding switch is **unchecked**:
+
+| Flag | Sent when | What the build does without it |
+|---|---|---|
+| `--no-save-eval-images` | `lfs.save_eval_images` is **off**, and only inside the `if lfs.eval:` branch | saves the GT-vs-render comparison PNGs to `lfs_output/eval_step_<N>/` at every evaluation |
+| `--no-alpha-as-mask` | the dataset carries mask files — no user setting | turns alpha-as-mask on automatically for any RGBA image, which silently outranks `masks/` |
+
+`--eval` itself is worth knowing before you read a metrics file: it holds a
+validation split out of *training* (`--test-every N`, which the app does not
+send), and it is the only thing that puts PSNR on stdout — `[Evaluation at step
+N] PSNR: … SSIM: … #GS: …`, which is what the step 4 chart plots. Without it
+`metrics.csv` is written all the same, header and nothing else, which is what
+most projects in `projects/` are holding.
+
 ---
 
 ## 7. Known traps

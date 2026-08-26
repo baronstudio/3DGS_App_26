@@ -350,6 +350,17 @@ fails on a `Training error:` line *and* on an output directory with no
 `.ply`/`.splat`. The `cudaEventDestroy failed: driver shutting down` storm that
 follows every exit is CUDA teardown noise, explicitly not fatal.
 
+Only flags this build actually has reach `build_lfs_command` — an unknown verb
+makes the exe exit non-zero — and two of them are negatives, which is where the
+mapping stops being obvious. `--no-alpha-as-mask` accompanies `--mask-mode`
+whenever the dataset carries mask files, because alpha-as-mask is *automatic*
+for any RGBA image and outranks them (§7.5 of the spec). And
+`--no-save-eval-images` is emitted when the **Save eval images** switch is off:
+the build saves the GT-vs-render comparison PNGs by default during an `--eval`
+run, into `lfs_output/eval_step_<N>/`. Both are sent only when they can mean
+something — the mask flag only with masks present, the eval flag only inside
+the `--eval` branch.
+
 **Blender** — `--background --python backend/scripts/blender_splatforge.py --`,
 custom args after the `--` separator.
 

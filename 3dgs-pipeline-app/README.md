@@ -163,6 +163,21 @@ To stop, close both console windows.
    live log. Long step. It can be aborted, and aborting genuinely kills the
    process tree — it will not leave anything holding your GPU.
 
+   Two options in this step are about *measuring* the training rather than
+   improving it. **Eval mode** holds a slice of your images out of training and
+   scores the splat against them every so often — that is where the PSNR curve
+   in the chart comes from, and it is what fills `metrics.csv` and
+   `metrics_report.txt` in `lfs_output/`. It is not free: the held-out images
+   are not trained on, so turn it on when you are comparing settings and off
+   for the run you intend to keep.
+
+   **Save eval images** goes with it, and only works when Eval mode is on. It
+   writes the pictures each evaluation scored — ground truth beside the
+   render, one per held-out camera — into `lfs_output/eval_step_<N>/`. The
+   metrics tell you a run got worse; these tell you where. They cost disk and
+   nothing else: the export step only ever copies the splat, so they never
+   leave `lfs_output/`, and a re-training clears them with the rest of it.
+
 5. **Export.** The trained splat is written to `export/` and shown in the
    viewer.
 
@@ -198,7 +213,7 @@ projects/<project-slug>/
 ├── analysis/    the curation results: scores, verdicts, your overrides
 ├── report/      the quality report
 ├── rc_output/   camera solution + sparse cloud
-├── lfs_output/  the trained splat
+├── lfs_output/  the trained splat, its metrics, and the eval images if you asked for them
 ├── export/      the final files, and the Blender scene
 └── preview/     browser-sized copies for the viewer — a cache, safe to delete
 ```
